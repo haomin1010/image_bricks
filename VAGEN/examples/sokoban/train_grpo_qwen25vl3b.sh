@@ -5,16 +5,19 @@ set -x
 PROJECT_NAME="verl_vagen"
 EXPERIMENT_NAME="grpo_qwen25vl3b"
 
-BASEDIR=$(pwd)
+BASEDIR=$(cd $(dirname "$0")/../.. && pwd)
 SCRIPTDIR=$(dirname "$0")
 EXPERIMENT_DIR=${BASEDIR}/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
 SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
-DATASET_TRAIN=${SCRIPTDIR}/train_sokoban_vision.yaml
-DATASET_VAL=${SCRIPTDIR}/val_sokoban_vision.yaml
+DATASET_TRAIN=$(cd ${SCRIPTDIR} && pwd)/train_sokoban_vision.yaml
+DATASET_VAL=$(cd ${SCRIPTDIR} && pwd)/val_sokoban_vision.yaml
 agent_loop_config_path=${BASEDIR}/vagen/configs/agent.yaml
 REF_MODEL_PATH=Qwen/Qwen2.5-VL-3B-Instruct
 mkdir -p ${EXPERIMENT_DIR}
 
+export VERL_CONFIG_PATH=${BASEDIR}/verl/verl/trainer/config
+
+cd ${BASEDIR}
 
 PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     --config-path=${BASEDIR}/vagen/configs \

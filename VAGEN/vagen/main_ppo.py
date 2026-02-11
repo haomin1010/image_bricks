@@ -16,6 +16,9 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 """
 
 import os
+# Disable torch.compile to avoid PyTorch 2.8.0 inductor API issues
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
+
 import socket
 
 import hydra
@@ -59,7 +62,9 @@ def run_ppo(config, task_runner_class=None) -> None:
         # NCCL debug level, VLLM logging level, and allow runtime LoRA updating
         # `num_cpus` specifies the number of CPU cores Ray can use, obtained from the configuration
         default_runtime_env = get_ppo_ray_runtime_env()
-        ray_init_kwargs = config.ray_kwargs.get("ray_init", {})
+        ray_init_kwargs = OmegaConf.to_container(config.ray_kwargs.get("ray_init", {}), resolve=True)
+        if ray_init_kwargs is None:
+            ray_init_kwargs = {}
         runtime_env_kwargs = ray_init_kwargs.get("runtime_env", {})
 
         if config.transfer_queue.enable:
@@ -68,11 +73,105 @@ def run_ppo(config, task_runner_class=None) -> None:
             runtime_env_vars["TRANSFER_QUEUE_ENABLE"] = "1"
             runtime_env_kwargs["env_vars"] = runtime_env_vars
 
-        runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
-        ray_init_kwargs = OmegaConf.create({**ray_init_kwargs, "runtime_env": runtime_env})
+        runtime_env = OmegaConf.to_container(OmegaConf.merge(default_runtime_env, runtime_env_kwargs), resolve=True)
+        ray_init_kwargs["runtime_env"] = runtime_env
+        # Use fixed namespace for actor discovery
+        ray_init_kwargs["namespace"] = "vagen_training"
         print(f"ray init kwargs: {ray_init_kwargs}")
-        ray.init(**OmegaConf.to_container(ray_init_kwargs))
+        ray.init(**ray_init_kwargs)
 
+        # Auto-start IsaacEnvServer ONLY if needed (check config)
+        # For mock backend, we don't need the real Isaac simulator
+        need_isaac_server = False
+        if hasattr(config, 'data') and hasattr(config.data, 'train_files'):
+            import yaml
+            import os
+            train_file = config.data.train_files
+            if os.path.exists(train_file):
+                with open(train_file, 'r') as f:
+                    data_config = yaml.safe_load(f)
+                    # Check if any environment uses "isaac" backend (not "mock")
+                    for env in data_config.get('envs', []):
+                        backend = env.get('config', {}).get('backend', 'mock')
+                        if backend == 'isaac':
+                            need_isaac_server = True
+                            break
+        
+        isaac_server_process = None
+        isaac_log_file = None
+        if need_isaac_server:
+            print(">>> Isaac backend detected. Starting IsaacEnvServer...")
+            try:
+                ray.get_actor("IsaacEnvServer")
+                print(">>> Found existing IsaacEnvServer.")
+            except ValueError:
+                print(">>> IsaacEnvServer NOT found. Starting in separate process (main thread required)...")
+                try:
+                    import subprocess
+                    import sys
+                    import time
+                    
+                    # Start Isaac server in dedicated process
+                    server_script = os.path.join(os.path.dirname(__file__), "server", "start_isaac_server.py")
+                    cmd = [
+                        sys.executable,
+                        server_script,
+                        "--num-envs", "64",
+                        "--device", "cuda:0",
+                        "--task", "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
+                        "--headless"
+                    ]
+                    
+                    env = os.environ.copy()
+                    # Server will auto-connect to the same Ray cluster
+                    env["CUDA_VISIBLE_DEVICES"] = "0"  # Isaac on GPU 0
+                    
+                    print(f">>> Starting Isaac server: {' '.join(cmd)}")
+                    # Redirect output to log file for debugging
+                    isaac_log_file = open("/tmp/isaac_server.log", "w")
+                    isaac_server_process = subprocess.Popen(
+                        cmd,
+                        env=env,
+                        stdout=isaac_log_file,
+                        stderr=subprocess.STDOUT,
+                        text=True
+                    )
+                    
+                    # Wait for server to register (poll for actor)
+                    print(">>> Waiting for IsaacEnvServer to register (max 120s)...")
+                    for i in range(120):
+                        try:
+                            ray.get_actor("IsaacEnvServer")
+                            print(f">>> IsaacEnvServer registered successfully after {i+1}s")
+                            break
+                        except ValueError:
+                            time.sleep(1)
+                    else:
+                        # Timeout - show Isaac server logs
+                        print(f">>> Isaac server process status: {'running' if isaac_server_process.poll() is None else 'exited'}")
+                        if isaac_server_process.poll() is not None:
+                            print(f">>> Isaac server exit code: {isaac_server_process.returncode}")
+                        print(">>> Isaac server log (last 50 lines):")
+                        try:
+                            with open("/tmp/isaac_server.log", "r") as f:
+                                lines = f.readlines()
+                                for line in lines[-50:]:
+                                    print(f"    {line.rstrip()}")
+                        except Exception as e:
+                            print(f">>> Could not read Isaac server log: {e}")
+                        raise TimeoutError("IsaacEnvServer failed to register within 120s")
+                    
+                except Exception as e:
+                    print(f">>> CRITICAL: Failed to auto-start IsaacEnvServer: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    if isaac_server_process:
+                        isaac_server_process.kill()
+                    raise
+        else:
+            print(">>> Mock backend detected. Skipping IsaacEnvServer startup.")
+    
+    # We should also ensure the TaskRunner uses the same Ray session
     if task_runner_class is None:
         task_runner_class = ray.remote(num_cpus=1)(TaskRunner)  # please make sure main_task is not scheduled on head
 
@@ -93,7 +192,33 @@ def run_ppo(config, task_runner_class=None) -> None:
         runner = task_runner_class.options(runtime_env={"nsight": nsight_options}).remote()
     else:
         runner = task_runner_class.remote()
-    ray.get(runner.run.remote(config))
+    try:
+        ray.get(runner.run.remote(config))
+    finally:
+        # One-click cleanup: Kill the simulator actor/process when training ends
+        print(">>> Cleaning up IsaacEnvServer...")
+        try:
+            # Kill the subprocess if we started one
+            if 'isaac_server_process' in locals() and isaac_server_process is not None:
+                print(">>> Terminating Isaac server subprocess...")
+                isaac_server_process.terminate()
+                import time
+                time.sleep(2)
+                if isaac_server_process.poll() is None:
+                    print(">>> Force killing Isaac server...")
+                    isaac_server_process.kill()
+                print(">>> Isaac server process terminated.")
+            
+            # Close log file
+            if 'isaac_log_file' in locals() and isaac_log_file is not None:
+                isaac_log_file.close()
+            
+            # Clean up Ray actor reference
+            server = ray.get_actor("IsaacEnvServer")
+            ray.kill(server, no_restart=True)
+            print(">>> IsaacEnvServer actor cleaned up.")
+        except Exception as e:
+            print(f">>> Cleanup error (non-critical): {e}")
 
     # [Optional] get the path of the timeline trace file from the configuration, default to None
     # This file is used for performance analysis
