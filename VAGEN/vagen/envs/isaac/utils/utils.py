@@ -10,18 +10,7 @@ import re
 from typing import Dict, Optional
 
 
-# ---------------------------------------------------------------------------
-# Regex patterns
-# ---------------------------------------------------------------------------
-
-# Outer envelope: <think>...</think><answer>...</answer>
-_ENVELOPE_RE = re.compile(
-    r"<think>(.*?)</think>\s*<answer>(.*?)</answer>",
-    re.DOTALL,
-)
-
-# Fallback: try to find a JSON object with x, y, z anywhere in the answer
-_JSON_OBJ_RE = re.compile(r"\{[^{}]*\}")
+# Strict-only mode: no fallback JSON scanning.
 
 
 # ---------------------------------------------------------------------------
@@ -42,31 +31,20 @@ def parse_response(response: str) -> Dict:
         - ``coordinate`` (dict | None): ``{"x": int, "y": int, "z": int}``
           or ``None`` if parsing failed.
     """
-    envelope_match = _ENVELOPE_RE.search(response)
+    print("Parsing response:", response)
 
-    if not envelope_match:
-        return {
-            "llm_raw_response": response,
-            "llm_response": response,
-            "think_content": "",
-            "action_content": "",
-            "format_correct": False,
-            "coordinate": None,
-        }
-
-    think_content = envelope_match.group(1).strip()
-    action_content = envelope_match.group(2).strip()
+    action_content = response
 
     coordinate = _extract_coordinate(action_content)
     is_submit = _is_submit(action_content)
     format_correct = coordinate is not None or is_submit
 
-    llm_response = f"<think>{think_content}</think><answer>{action_content}</answer>"
+    print("Extracted coordinate:", coordinate)
+    print("Is submit action:", is_submit)
+    print("Format correct:", format_correct)
 
     return {
         "llm_raw_response": response,
-        "llm_response": llm_response,
-        "think_content": think_content,
         "action_content": action_content,
         "format_correct": format_correct,
         "coordinate": coordinate,
@@ -92,21 +70,12 @@ def _is_submit(text: str) -> bool:
 
 
 def _extract_coordinate(text: str) -> Optional[Dict[str, int]]:
-    """Try to extract {"x": int, "y": int, "z": int} from *text*.
-    Returns the coordinate dict, or ``None`` on failure.
+    """Parse a strict {"x": int, "y": int, "z": int} JSON object.
+
+    Only the exact JSON object is accepted. Any extra text or keys causes
+    parsing to fail.
     """
-    # First try to parse the whole text as JSON
-    coord = _try_parse_xyz(text)
-    if coord is not None:
-        return coord
-
-    # Fallback: find any JSON object in the text
-    for m in _JSON_OBJ_RE.finditer(text):
-        coord = _try_parse_xyz(m.group())
-        if coord is not None:
-            return coord
-
-    return None
+    return _try_parse_xyz(text)
 
 
 def _try_parse_xyz(text: str) -> Optional[Dict[str, int]]:
@@ -119,7 +88,7 @@ def _try_parse_xyz(text: str) -> Optional[Dict[str, int]]:
     if not isinstance(obj, dict):
         return None
 
-    if "x" in obj and "y" in obj and "z" in obj:
+    if set(obj.keys()) == {"x", "y", "z"}:
         try:
             return {
                 "x": int(obj["x"]),

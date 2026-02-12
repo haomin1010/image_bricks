@@ -11,8 +11,8 @@ set -x
 conda activate bricks
 
 # ---- GPU selection (change to desired GPU ID, e.g. 0, 1, ..., 7) ----
-# We expose 7 GPUs: 0 for Isaac (managed in python), 1-7 for training
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1,2,3,4,5,6,7}
+# We expose 3 GPUs for training (1, 2, 3). GPU 0 is reserved for Isaac Sim.
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-1,2,3}
 export HF_ENDPOINT=https://hf-mirror.com
 export HF_HUB_OFFLINE=1
 export HF_HUB_OFFLINE=1
@@ -45,7 +45,7 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     --config-name='vagen_multiturn' \
     data.train_files=${DATASET_TRAIN} \
     data.val_files=${DATASET_VAL} \
-    data.train_batch_size=7 \
+    data.train_batch_size=3 \
     data.max_prompt_length=4096 \
     data.max_response_length=4096 \
     algorithm.adv_estimator=grpo \
@@ -55,7 +55,7 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     actor_rollout_ref.model.use_fused_kernels=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
-    actor_rollout_ref.actor.ppo_mini_batch_size=7 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=3 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.actor.kl_loss_coef=0.0 \
@@ -71,13 +71,13 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     actor_rollout_ref.rollout.name=sglang \
     actor_rollout_ref.rollout.mode=async \
     actor_rollout_ref.rollout.n=2 \
-    actor_rollout_ref.rollout.max_num_batched_tokens=4096 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.max_num_batched_tokens=512 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
     actor_rollout_ref.rollout.enforce_eager=True \
     actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
     actor_rollout_ref.rollout.multi_turn.enable=True \
-    actor_rollout_ref.rollout.agent.num_workers=7 \
+    actor_rollout_ref.rollout.agent.num_workers=3 \
     actor_rollout_ref.rollout.agent.agent_loop_config_path=${agent_loop_config_path} \
     actor_rollout_ref.rollout.disable_log_stats=False \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
@@ -97,7 +97,8 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger="['console','wandb']" \
     trainer.val_before_train=False \
-    trainer.n_gpus_per_node=7 \
+    trainer.n_gpus_per_node=3 \
+    trainer.nnodes=1 \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
     trainer.test_freq=20 \

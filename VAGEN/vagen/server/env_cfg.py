@@ -99,7 +99,6 @@ def get_stack_cube_env_cfg(task_name, device, num_envs, enable_cameras=True):
             "cam_front_left": ([-0.1, 0.5, 0.6], [0.0, 0.7, -0.7]), 
             "cam_front_right": ([-0.1, -0.5, 0.6], [0.0, 0.7, 0.7]),
             "cam_back_left": ([1.1, 0.5, 0.6], [0.0, 0.7, -2.4]),
-            "cam_back_right": ([1.1, -0.5, 0.6], [0.0, 0.7, 2.4]),
         }
         for cam_name, (pos, euler) in camera_ring_configs.items():
             q = math_utils.quat_from_euler_xyz(

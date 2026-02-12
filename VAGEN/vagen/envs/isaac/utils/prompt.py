@@ -13,14 +13,17 @@ Colour legend for mock-rendered images:
 def system_prompt():
     """Return the system prompt describing the cube stacking task."""
     return """\
-You are a robot arm controller.
-Task: You see multiple camera views of a tabletop with a grey grid and some blue cubes.
-Your goal is to stack all the blue cubes on top of each other at specific grid coordinates (x, y). 
-Grid: The grid is 6x6, with coordinates from (0,0) to (5,5).
-Position (3,3) is the center of the grid.
-Each turn, you must decide the (x, y, z) coordinate where the next cube should be placed.
-z=0 is the bottom-most position. z=1 is on top of the first cube, and so on.
-IMPORTANT: Output only the required JSON format and thinking process. Do not include any vision tags or special image tokens in your response.
+You are a robot arm controller. You observe camera views of a 6x6 tabletop grid (coordinates x,y in {0..5}). Place one cube per turn by outputting the target grid coordinate (x,y,z) where z is 0 for the base layer, 1 for the layer above, etc.
+
+Valid answer forms:
+1) Place a cube:
+{"x": INT, "y": INT, "z": INT}
+- The JSON must contain integer values for keys "x", "y", and "z".
+- Keys must be named exactly: x, y, z (lowercase).
+- Use plain ASCII double quotes (").
+
+2) When you believe the task is complete, submit:
+submit
 """
 
 
@@ -30,7 +33,9 @@ def init_observation_template(img_placeholders: str):
 [System]: Environment Reset. All cubes are back to the pick position or hidden.
 Current views:
 {img_placeholders}
-Please provide the coordinate (x,y,z) for the first cube (z=0)."""
+Please provide the coordinate (x,y,z) for the first cube (z=0). Examples (must match format exactly):
+{{"x": INT, "y": INT, "z": INT}}
+"""
 
 
 
@@ -40,31 +45,66 @@ def action_template(action_result: str, img_placeholders: str):
 [System]: {action_result}
 Updated views:
 {img_placeholders}
-Determine the next (x, y, z) coordinate."""
+Determine the next coordinate. Examples (must match format exactly):
+{{"x": INT, "y": INT, "z": INT}}"""
 
 
 
 def format_prompt(add_example: bool = True):
     """Generate the output-format instructions appended to the system prompt."""
-    base_prompt = """\
+    base_prompt = f"""\
 You must place exactly one brick per turn.
-Your response should be in the format of:
-<think>...</think><answer>{"x": INT, "y": INT, "z": INT}</answer>
+Your response should be in the format of:{{"x": INT, "y": INT, "z": INT}}
 Where x, y, z are the integer grid coordinates for the brick.
 When you believe all bricks are stacked correctly, output:
-<think>...</think><answer>submit</answer>"""
+submit"""
 
     if add_example:
-        examples = """
-Example 1:
-<think>Looking at the images, the base layer is missing a brick at position \
-(2, 3, 0). I should place one there.</think>
-<answer>{"x": 2, "y": 3, "z": 0}</answer>
-Example 2:
-<think>The first layer is complete. Now I need to start the second layer. \
-Position (1, 1, 1) seems correct based on the reference.</think>
-<answer>{"x": 1, "y": 1, "z": 1}</answer>
-"""
+        examples = f"""
+    Example 1:{{"x": 2, "y": 3, "z": 0}}
+    Example 2:{{"x": 1, "y": 1, "z": 1}}
+    """
         return base_prompt + "\n" + examples
 
     return base_prompt
+
+
+def _validate_system_prompt_text(text: str) -> bool:
+    """Basic validation for the composed system+format prompt.
+
+    Checks presence of reasoning tag and an action envelope (<answer>)
+    with an example JSON coordinate. This is intentionally lightweight — it only
+    ensures the agent receives a clear machine-parseable example to avoid
+    format-errors that lead to invalid dialogues.
+    """
+
+    # require a JSON-like coordinate example somewhere
+    if "{\"x\"" not in text and "{\'x\'" not in text and '"x":' not in text:
+        return False
+
+    return True
+
+
+def get_checked_system_prompt(add_example: bool = True) -> str:
+    """Return the normal system prompt + format if valid, otherwise return a
+    concise corrective example that shows the exact expected reply format.
+
+    This helper is intended for Isaac-managed environments only: when the
+    composed system prompt looks malformed, returning the short corrective
+    example helps the agent produce a valid reply instead of entering a
+    non-parseable dialogue loop.
+    """
+    base = system_prompt()
+    fmt = format_prompt(add_example=add_example)
+    composed = base + "\n" + fmt
+
+    if _validate_system_prompt_text(composed):
+        return composed
+
+    # Fallback corrective example (minimal, explicit and machine-parseable)
+    corrective = (
+        "System prompt validation failed. Please use the following exact reply format:{{\"x\": INT, \"y\": INT, \"z\": INT}}\n\n"
+        "Example:{{\"x\": 2, \"y\": 3, \"z\": 0}}\n"
+    )
+
+    return corrective

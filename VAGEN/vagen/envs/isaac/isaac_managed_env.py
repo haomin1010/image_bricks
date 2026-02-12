@@ -52,7 +52,7 @@ class IsaacManagedEnvConfig:
     num_total_envs: int = 64  # total sub-envs in the DirectVectorEnv
 
     # Observation
-    n_views: int = 4
+    n_views: int = 3
     image_size: Tuple[int, int] = (224, 224)
 
     # Step limits
@@ -167,6 +167,7 @@ class IsaacManagedEnv(GymImageEnv):
         Returns:
             ``(obs, reward, done, info)``
         """
+        print(f"Received action string: {action_str}")  # Debug logging
         self.steps_taken += 1
         parsed = parse_response(action_str)
 
@@ -193,12 +194,24 @@ class IsaacManagedEnv(GymImageEnv):
             # Parse failure — render current state and show error
             server = await self._get_server()
             images = await server.render.remote(self._sub_env_id)
+            # Prefer targeted feedback when think tag is missing
+            if parsed.get("missing_think", False):
+                msg = (
+                    "Your response is missing the <think>...</think> reasoning tag. "
+                    "Please include a short reasoning inside <think> and then the answer. "
+                    "Example: <think>The bottom layer is missing at (2,3).</think>"
+                    "<answer>{{\"x\": 2, \"y\": 3, \"z\": 0}}</answer>"
+                )
+            else:
+                msg = (
+                    "Could not parse your action. "
+                    "Example: <think>The bottom layer is missing at (2,3).</think>"
+                    "<answer>{{\"x\": 2, \"y\": 3, \"z\": 0}}</answer>"
+                )
+
             obs = self._make_multi_image_obs(
                 action_template(
-                    action_result=(
-                        "Could not parse your action. "
-                        'Please output valid JSON: {"x": INT, "y": INT, "z": INT} or "submit".'
-                    ),
+                    action_result=msg,
                     img_placeholders=self._img_placeholders(),
                 ),
                 images,
@@ -305,8 +318,17 @@ class IsaacManagedEnv(GymImageEnv):
 
     def _build_system_prompt(self) -> str:
         """Compose the full system prompt string."""
-        fmt = format_prompt(add_example=self.config.use_example_in_sys_prompt)
-        return system_prompt() + "\n" + fmt
+        # Use checked system prompt for Isaac environment: if the composed
+        # prompt is malformed, return a concise corrective example so the
+        # LLM replies in a parseable format instead of producing invalid text.
+        try:
+            from .utils.prompt import get_checked_system_prompt
+        except Exception:
+            # Fallback to original behavior on import error
+            fmt = format_prompt(add_example=self.config.use_example_in_sys_prompt)
+            return system_prompt() + "\n" + fmt
+
+        return get_checked_system_prompt(add_example=self.config.use_example_in_sys_prompt)
 
     def _img_placeholders(self) -> str:
         """Return n image placeholder tokens separated by newlines."""
