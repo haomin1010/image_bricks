@@ -1,6 +1,6 @@
 hydra:
   searchpath:
-    - file:../../verl/verl/trainer/config
+    - file://${oc.env:VERL_CONFIG_PATH,../../verl/verl/trainer/config}
 defaults:
   - ppo_trainer
   - env_registry

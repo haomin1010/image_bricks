@@ -1,0 +1,31 @@
+fileroot: "/mnt/data/image_bricks/VAGEN"
+
+envs:
+  - name: BrickIsaac  # 必须与 env_registry.yaml 中的 key 完全一致
+    n_envs: 1
+    tag_id: isaac_real_test
+    seed: [1001]
+    max_turns: 15
+    config:
+      backend: isaac  # 关键：告诉 IsaacManagedEnv 使用真实的 Ray Actor
+      n_views: 3
+      image_size: [224, 224]
+    chat_config:
+      temperature: 0
+      max_tokens: 512
+
+experiment:
+  dump_dir: ${fileroot}/outputs/eval_isaac
+  default_max_turns: 10
+
+run:
+  backend: "sglang"
+  base_seed: 0
+  max_concurrent_jobs: 1
+  resume: overwrite
+
+backends:
+  sglang:
+    base_url: "http://127.0.0.1:30000/v1"
+    model: "Qwen/Qwen2.5-VL-3B-Instruct"
+    max_concurrency: 1

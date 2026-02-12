@@ -61,3 +61,16 @@ def build_client_gemini(cfg: Dict[str, Any]) -> _GeminiClient:
     if not api_key:
         raise ValueError("Gemini API key missing (set GEMINI_API_KEY or GOOGLE_API_KEY).")
     return _GeminiClient(api_key)
+
+
+def build_client_qwen(cfg: Dict[str, Any]) -> AsyncOpenAI:
+    """Build a Qwen-compatible client using the AsyncOpenAI wrapper.
+
+    Expects API key in `cfg['api_key']` or env `QWEN_API_KEY`. Optionally a
+    base URL may be provided via `cfg['base_url']` or env `QWEN_BASE_URL`.
+    """
+    api_key = cfg.get("api_key") or os.getenv("QWEN_API_KEY", "")
+    base_url = cfg.get("base_url") or os.getenv("QWEN_BASE_URL", "")
+    if not api_key:
+        raise ValueError("Qwen API key missing (set QWEN_API_KEY or provide cfg['api_key']).")
+    return AsyncOpenAI(api_key=api_key, base_url=base_url) if base_url else AsyncOpenAI(api_key=api_key)

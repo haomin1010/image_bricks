@@ -1,5 +1,4 @@
 env_registry:
   Sokoban: vagen.envs.sokoban.sokoban_env.Sokoban
   FrozenLake: vagen.envs.frozenlake.frozenlake_env.FrozenLake
-  # BrickBuilder: vagen.envs.brick.brick_env.BrickBuilder  # TODO: brick/ directory not yet created
-  BrickIsaac: vagen.envs.brick_isaac.isaac_managed_env.IsaacManagedEnv
+  BrickIsaac: vagen.envs.isaac.isaac_managed_env.IsaacManagedEnv

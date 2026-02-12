@@ -1,0 +1,70 @@
+fileroot: "/mnt/data/image_bricks/VAGEN"
+
+envs:
+  - name: BrickIsaac
+    n_envs: 1
+    tag_id: isaac_eval_standard
+    seed: [1001, 1001, 1]
+    split: test
+    max_turns: 15
+    config:
+      backend: isaac
+      n_views: 3
+      image_size: [224, 224]
+      max_steps: 200
+      format_reward: 0.1
+      success_reward: 1.0
+    chat_config:
+      temperature: 0
+      max_tokens: 512
+      top_p: 1.0
+
+experiment:
+  dump_dir: ${fileroot}/outputs/eval_isaac
+  default_max_turns: 10
+
+run:
+  backend: "sglang"
+  base_seed: 0
+  max_concurrent_jobs: 1
+  resume: overwrite
+  live_summary: true
+
+backends:
+  sglang:
+    base_url: "http://127.0.0.1:30000/v1"
+    api_key: "EMPTY"
+    model: "Qwen/Qwen2.5-VL-3B-Instruct"
+    max_concurrency: 1
+    max_retries: 6
+    min_backoff: 0.5
+    max_backoff: 8.0
+
+  qwen:
+    # Qwen remote backend configuration. Prefer setting `QWEN_API_KEY` in env.
+    base_url: null  # override with your endpoint
+    api_key: ""                              # or leave empty to use env QWEN_API_KEY
+    model: "qwen3-vl-plus"                     # example model id; change as needed
+    max_concurrency: 2
+    max_retries: 6
+    min_backoff: 0.5
+    max_backoff: 8.0
+
+  openai:
+    api_key: ""                   # or env OPENAI_API_KEY
+    base_url: null
+    model: "gpt-4o-mini"
+    max_concurrency: 2
+    max_retries: 6
+    min_backoff: 0.5
+    max_backoff: 8.0
+
+  claude:
+    api_key: ""                   # or env ANTHROPIC_API_KEY
+    base_url: null
+    model: "claude-3-5-sonnet-latest"
+    max_concurrency: 2
+    max_retries: 6
+    min_backoff: 0.5
+    max_backoff: 8.0
+

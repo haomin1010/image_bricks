@@ -7,7 +7,21 @@ import copy
 import json
 import logging
 import os
+
+# --- Proxy Fix: Ensure local addresses bypass proxy for local SGLang
+# Avoid removing global proxy envs (they're needed for remote downloads).
+# Instead, ensure NO_PROXY contains localhost so local connections won't use the proxy.
+existing_no_proxy = os.environ.get("NO_PROXY")
+if existing_no_proxy:
+    if "localhost" not in existing_no_proxy and "127.0.0.1" not in existing_no_proxy:
+        os.environ["NO_PROXY"] = existing_no_proxy + ",localhost,127.0.0.1"
+else:
+    os.environ["NO_PROXY"] = "localhost,127.0.0.1"
+
 import shutil
+import subprocess
+import sys
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -295,6 +309,12 @@ def _load_config(cfg_path: str, overrides: List[str]) -> DictConfig:
 
 
 def main() -> None:
+    # --- Ray and Isaac Server Initialization (Mirroring main_ppo.py logic) ---
+    import ray
+    if not ray.is_initialized():
+        # Use fixed namespace for actor discovery
+        ray.init(namespace="vagen_training", ignore_reinit_error=True)
+
     args = _parse_args()
     cfg_path = args.config or DEFAULT_CONFIG_PATH
     cfg_path = os.path.abspath(cfg_path)
@@ -308,8 +328,150 @@ def main() -> None:
     cfg: Dict[str, Any] = OmegaConf.to_container(cfg_node, resolve=True)  # type: ignore
     base_dir = os.path.dirname(cfg_path)
 
+    # Auto-start IsaacEnvServer ONLY if needed (check config)
+    need_isaac_server = False
+    env_specs = _parse_env_specs(cfg)
+    for spec in env_specs:
+        if spec.name == "BrickIsaac" and spec.config.get("backend") == "isaac":
+            need_isaac_server = True
+            break
+    
+    isaac_server_process = None
+    if need_isaac_server:
+        print(">>> Isaac backend detected. Starting IsaacEnvServer...")
+        try:
+            ray.get_actor("IsaacEnvServer")
+            print(">>> Found existing IsaacEnvServer.")
+        except ValueError:
+            print(">>> IsaacEnvServer NOT found. Starting in separate process (main thread required)...")
+            try:
+                # Start Isaac server in dedicated process
+                server_script = os.path.join(os.path.dirname(__file__), "..", "server", "start_isaac_server.py")
+                server_script = os.path.abspath(server_script)
+                cmd = [
+                    sys.executable,
+                    server_script,
+                    "--num-envs", "64",
+                    "--device", "cuda:0",
+                    "--task", "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
+                    "--headless"
+                ]
+
+                env = os.environ.copy()
+                # Server will auto-connect to the same Ray cluster
+                # Run Isaac on GPU0 (exclusive for Isaac)
+                env["CUDA_VISIBLE_DEVICES"] = "0"
+                
+                print(f">>> Starting Isaac server: {' '.join(cmd)}")
+                # Redirect output to log file for debugging
+                isaac_log_file = open("/tmp/isaac_server.log", "a")
+                isaac_server_process = subprocess.Popen(
+                    cmd,
+                    env=env,
+                    stdout=isaac_log_file,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+                
+                # Wait for server to register (poll for actor)
+                print(">>> Waiting for IsaacEnvServer to register (max 120s)...")
+                for i in range(120):
+                    try:
+                        ray.get_actor("IsaacEnvServer")
+                        print(f">>> IsaacEnvServer registered successfully after {i+1}s")
+                        break
+                    except ValueError:
+                        time.sleep(1)
+                else:
+                    print(">>> Timeout waiting for Isaac server.")
+            except Exception as e:
+                print(f">>> Failed to start Isaac server: {e}")
+
     run_cfg = cfg.get("run") or {}
-    backend = str(run_cfg.get("backend", "openai")).lower()
+    backend = str(run_cfg.get("backend", "openai")).lower()    
+    # --- SGLang Auto-start Logic ---
+    sglang_server_process = None
+    if backend == "sglang":
+        backend_cfg: Dict[str, Any] = OmegaConf.to_container(cfg_node.backends[backend], resolve=True)  # type: ignore
+        base_url = backend_cfg.get("base_url", "")
+        if "127.0.0.1" in base_url or "localhost" in base_url:
+            port = base_url.split(":")[-1].split("/")[0]
+            # Check if port is already in use
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if s.connect_ex(('127.0.0.1', int(port))) != 0:
+                    print(f">>> SGLang server not detected on port {port}. Starting it...")
+                    model_path = backend_cfg.get("model", "Qwen/Qwen2.5-VL-3B-Instruct")
+                    # Use GPUs 0,1,2,3 for SGLang. GPU 1 will be shared with Isaac (as requested).
+                    env = os.environ.copy()
+                    env["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+
+                    # Determine requested tp from backend_cfg if present, otherwise use number of GPUs.
+                    try:
+                        requested_tp = int(backend_cfg.get("tp", 0) or 0)
+                    except Exception:
+                        requested_tp = 0
+                    gpu_list = [g.strip() for g in env.get("CUDA_VISIBLE_DEVICES", "").split(",") if g.strip()]
+                    num_gpus = len(gpu_list) if gpu_list else 1
+                    # Default to using all available GPUs for tp if not explicitly configured
+                    if requested_tp <= 0:
+                        requested_tp = num_gpus
+
+                    # Qwen-like models require num_attention_heads to be divisible by tp.
+                    # Common head counts are 16; pick the largest divisor of 16 <= requested_tp.
+                    possible_divisors = [16, 8, 4, 2, 1]
+                    tp_to_use = 1
+                    for d in possible_divisors:
+                        if d <= requested_tp:
+                            tp_to_use = d
+                            break
+
+                    # Ensure we don't request more tensor partitions than GPUs available
+                    if tp_to_use > num_gpus:
+                        for d in possible_divisors:
+                            if d <= num_gpus:
+                                tp_to_use = d
+                                break
+
+                    if tp_to_use != requested_tp:
+                        print(f">>> Adjusting requested tp={requested_tp} -> tp={tp_to_use} to satisfy model partitioning and available GPU constraints")
+
+                    cmd = [
+                        sys.executable, "-m", "sglang.launch_server",
+                        "--model-path", model_path,
+                        "--port", str(port),
+                        "--tp", str(tp_to_use),
+                        "--mem-fraction-static", "0.2"
+                    ]
+                    
+                    sglang_log_file = open("/tmp/sglang_server.log", "a")
+                    sglang_server_process = subprocess.Popen(
+                        cmd,
+                        env=env,
+                        stdout=sglang_log_file,
+                        stderr=subprocess.STDOUT,
+                        text=True
+                    )
+                    
+                    print(f">>> Waiting for SGLang server to go online (max 300s)...")
+                    import http.client
+                    online = False
+                    for i in range(300):
+                        try:
+                            conn = http.client.HTTPConnection("127.0.0.1", int(port))
+                            conn.request("GET", "/v1/models")
+                            resp = conn.getresponse()
+                            if resp.status == 200:
+                                print(f">>> SGLang server is online after {i+1}s")
+                                online = True
+                                break
+                        except:
+                            pass
+                        time.sleep(1)
+                    if not online:
+                        print(">>> Timeout waiting for SGLang server. Check /tmp/sglang_server.log")
+                else:
+                    print(f">>> Found existing process on port {port}, assuming it's SGLang.")
     resume_mode = str(run_cfg.get("resume", "skip_completed"))
     live_summary = bool(run_cfg.get("live_summary", False))
     max_concurrent = int(run_cfg.get("max_concurrent_jobs", 4))
@@ -413,6 +575,23 @@ def main() -> None:
                 json.dump(summary_payload, f, ensure_ascii=False, indent=2)
             print(f"[Error details appended] {outp}")
         print(f"[Summary written] {outp}")
+
+    # Cleanup auto-started processes
+    if isaac_server_process:
+        print(">>> Terminating auto-started IsaacEnvServer...")
+        isaac_server_process.terminate()
+        try:
+            isaac_server_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            isaac_server_process.kill()
+
+    if sglang_server_process:
+        print(">>> Terminating auto-started SGLang server...")
+        sglang_server_process.terminate()
+        try:
+            sglang_server_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            sglang_server_process.kill()
 
 
 if __name__ == "__main__":
