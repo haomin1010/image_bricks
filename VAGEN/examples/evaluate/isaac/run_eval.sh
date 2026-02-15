@@ -8,9 +8,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="${1:-$SCRIPT_DIR/config.yaml}"
 shift 2>/dev/null
 
-cd "$SCRIPT_DIR/../.."
+# Compute repository root (four levels up from this examples/isaac script -> image_bricks)
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+# Move to repository root so relative paths resolve correctly
+cd "$REPO_ROOT"
+# Device for Isaac server (can be overridden by env var DEVICE)
+DEVICE="${DEVICE:-cuda:0}"
 # Default to API backend (qwen) to avoid loading local models. Users can override via extra args.
-DEFAULT_OVERRIDES=(run.backend=qwen)
+# Default overrides: use qwen backend and write outputs inside the repository
+DEFAULT_OVERRIDES=(run.backend=qwen fileroot=${REPO_ROOT}/VAGEN)
 
 # If user provided any override that sets run.backend, respect it; otherwise prepend default.
 use_default=true
@@ -21,8 +27,13 @@ for arg in "$@"; do
 	fi
 done
 
+ray stop --force
+pkill -f start_isaac_server.py || true
+
+run_cmd=(python3 -m vagen.evaluate.run_eval --config "$CONFIG")
 if [ "$use_default" = true ]; then
-	python3 -m vagen.evaluate.run_eval --config "$CONFIG" "${DEFAULT_OVERRIDES[@]}" "$@"
-else
-	python3 -m vagen.evaluate.run_eval --config "$CONFIG" "$@"
+	run_cmd+=("${DEFAULT_OVERRIDES[@]}")
 fi
+run_cmd+=("$@")
+
+"${run_cmd[@]}"
