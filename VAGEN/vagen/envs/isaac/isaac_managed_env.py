@@ -250,14 +250,19 @@ class IsaacManagedEnv(GymImageEnv):
             }
             server = await self._get_server()
             response = await server.remote_step.remote(self._sub_env_id, goal)
-            
+
             images = response["images"]
             step_reward = response["reward"]
             step_done = response["done"]
             step_info = response["info"]
 
             reward += step_reward
-            done = step_done
+            # For non-submit high-level goals we treat the environment as continuing
+            # (do not end the episode). The server signals step completion via
+            # `step_done` and `step_info['success']`, but the episode should only
+            # terminate on explicit submit actions. This prevents the LLM from
+            # stopping planning after each successful low-level execution.
+            done = False
             metrics["turn_metrics"]["action_is_effective"] = True
 
             if step_info.get("success", False):

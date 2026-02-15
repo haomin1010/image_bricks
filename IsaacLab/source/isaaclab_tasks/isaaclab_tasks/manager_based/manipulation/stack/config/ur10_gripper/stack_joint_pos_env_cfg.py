@@ -161,8 +161,9 @@ class UR10LongSuctionCubeStackEnvCfg(UR10CubeStackEnvCfg):
 
         self.scene.ee_frame = FrameTransformerCfg(
             prim_path="{ENV_REGEX_NS}/Robot/base_link",
-            debug_vis=True,
-            visualizer_cfg=self.marker_cfg,
+            debug_vis=False,
+            # visualizer disabled to prevent arrow appearing in camera views
+            visualizer_cfg=None,
             target_frames=[
                 FrameTransformerCfg.FrameCfg(
                     prim_path="{ENV_REGEX_NS}/Robot/ee_link",
@@ -198,8 +199,8 @@ class UR10ShortSuctionCubeStackEnvCfg(UR10CubeStackEnvCfg):
 
         self.scene.ee_frame = FrameTransformerCfg(
             prim_path="{ENV_REGEX_NS}/Robot/base_link",
-            debug_vis=True,
-            visualizer_cfg=self.marker_cfg,
+            debug_vis=False,
+            visualizer_cfg=None,
             target_frames=[
                 FrameTransformerCfg.FrameCfg(
                     prim_path="{ENV_REGEX_NS}/Robot/ee_link",

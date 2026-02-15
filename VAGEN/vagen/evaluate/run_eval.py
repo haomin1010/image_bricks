@@ -351,10 +351,10 @@ def main() -> None:
                 cmd = [
                     sys.executable,
                     server_script,
-                    "--num-envs", "64",
-                    "--device", "cuda:0",
+                    "--num-envs", "8",
+                    "--device", "cpu",
                     "--task", "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
-                    "--headless"
+                    #"--headless"
                 ]
 
                 env = os.environ.copy()
@@ -362,14 +362,12 @@ def main() -> None:
                 # Run Isaac on GPU0 (exclusive for Isaac)
                 env["CUDA_VISIBLE_DEVICES"] = "0"
                 
-                print(f">>> Starting Isaac server: {' '.join(cmd)}")
-                # Redirect output to log file for debugging
-                isaac_log_file = open("/tmp/isaac_server.log", "a")
+                print(f">>> Starting Isaac server in foreground (logs will print here): {' '.join(cmd)}")
+                # Start Isaac server as a child process that inherits stdout/stderr
+                # so its logs appear in this main process's terminal for easier debugging.
                 isaac_server_process = subprocess.Popen(
                     cmd,
                     env=env,
-                    stdout=isaac_log_file,
-                    stderr=subprocess.STDOUT,
                     text=True
                 )
                 
