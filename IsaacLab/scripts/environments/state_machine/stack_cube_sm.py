@@ -41,6 +41,7 @@ from isaaclab_tasks.utils import parse_env_cfg
 
 import sys
 import os
+import threading
 
 class StackingStateMachine:
     def __init__(self, num_envs, device, scene, cube_names, max_tasks=8, cube_z_size=0.025, grid_origin=[0.5, 0.0, 0.001], cell_size=0.056):
@@ -57,7 +58,9 @@ class StackingStateMachine:
         self.target_positions = torch.zeros((num_envs, max_tasks, 3), device=device)
         self.num_tasks_per_env = torch.zeros(num_envs, dtype=torch.long, device=device)
         
-        self.state = torch.zeros(num_envs, dtype=torch.long, device=device)
+        # Ensure IDLE is defined before using it to initialize state
+        self.IDLE = -2
+        self.state = torch.full((num_envs,), self.IDLE, dtype=torch.long, device=device)
         self.wait_timer = torch.zeros(num_envs, device=device)
         self.task_index = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.state_timer = torch.zeros(num_envs, device=device)
@@ -88,6 +91,12 @@ class StackingStateMachine:
         self.RETRACT = 7
         self.ROTATE_TARGET = 8
         self.ROTATE_BACK = 9
+        self.IDLE = -2
+
+        # Flags for server-style task delivery
+        self.has_pending_targets = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.new_task_available = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.new_task_index = torch.full((num_envs,), -1, dtype=torch.long, device=device)
 
     def apply_magic_suction(self, obs):
         """直接在 GPU 上同步被吸附方块的位姿，实现‘魔法吸附’"""
@@ -149,14 +158,24 @@ class StackingStateMachine:
         """Update targets for specific environments. targets: list of (x,y,z) tuples"""
         for i, env_id in enumerate(env_ids):
             num_t = min(len(targets), self.max_tasks)
-            self.num_tasks_per_env[env_id] = num_t
-            # Map grid (gx, gy, level) to world positions
-            # Note: This logic requires access to grid params, we'll implement it in the update call
-            for t_idx in range(num_t):
-                self.target_positions[env_id, t_idx] = torch.tensor(targets[t_idx], device=self.device)
+            # append targets rather than overwrite
+            start_idx = int(self.num_tasks_per_env[env_id].item())
+            write_count = min(num_t, self.max_tasks - start_idx)
+            for t_idx in range(write_count):
+                self.target_positions[env_id, start_idx + t_idx] = torch.tensor(targets[t_idx], device=self.device)
+            # update total count
+            self.num_tasks_per_env[env_id] = start_idx + write_count
+            # server-style flags: mark pending and record index of first new task
+            self.has_pending_targets[env_id] = True
+            self.new_task_available[env_id] = True
+            self.new_task_index[env_id] = start_idx
+            # if idle, set task_index to start_idx so execution will begin
+            if self.state[env_id] == self.IDLE:
+                self.task_index[env_id] = start_idx
+                self.state[env_id] = self.APPROACH_CUBE
 
     def reset_envs(self, env_ids):
-        self.state[env_ids] = 0
+        self.state[env_ids] = self.IDLE
         self.wait_timer[env_ids] = 0
         self.task_index[env_ids] = 0
         self.state_timer[env_ids] = 0
@@ -164,6 +183,9 @@ class StackingStateMachine:
         self.error_sum[env_ids] = 0
         self.soft_start_timer[env_ids] = 100 # 重置后开启 100 步的软启动（约 1-2 秒）
         self.attached_cube_idx[env_ids] = -1 # 重置吸附状态
+        # 清除服务器式任务标志
+        self.has_pending_targets[env_ids] = False
+        self.new_task_available[env_ids] = False
 
     def reset_all(self):
         self.reset_envs(torch.arange(self.num_envs, device=self.device))
@@ -205,11 +227,26 @@ class StackingStateMachine:
                 cube_z_size / 2.0
             ], device=self.device)
 
-            if self.num_tasks_per_env[i] == 0 or self.task_index[i] >= self.num_tasks_per_env[i]:
-                # 所有任务完成或无任务：停留在等待区，并允许计时器递减以触发重置
+            # Server-driven behaviour: only act when pending targets exist
+            if not self.has_pending_targets[i]:
+                # Idle: stay at safe pose and keep gripper released
                 target_pos = torch.tensor([0.4, 0.0, 0.4], device=self.device)
-                gripper_cmd = 1.0 # 停止吸气
-                self.state[i] = -1 # Finished state
+                gripper_cmd = 1.0
+                self.state[i] = self.IDLE
+                # increment timers lightly so diagnostics still work
+                self.state_timer[i] += 1
+                actions[i, :3] = torch.zeros(3, device=self.device)
+                if num_actions > 6:
+                    actions[i, 6] = gripper_cmd
+                continue
+
+            if self.num_tasks_per_env[i] == 0 or self.task_index[i] >= self.num_tasks_per_env[i]:
+                # 当任务队列耗尽，回到 IDLE，等待下一个坐标
+                target_pos = torch.tensor([0.4, 0.0, 0.4], device=self.device)
+                gripper_cmd = 1.0
+                self.has_pending_targets[i] = False
+                self.new_task_available[i] = False
+                self.state[i] = self.IDLE
                 self.wait_timer[i] -= 1
             else:
                 # 获取任务信息
@@ -539,6 +576,19 @@ def main():
         if hasattr(env_cfg.scene, d_cam):
             setattr(env_cfg.scene, d_cam, None)
 
+    # 从观察管理器中彻底删除所有引用了这些相机的术语 (防止 ValueError)
+    if hasattr(env_cfg, "observations"):
+        for group_name in dir(env_cfg.observations):
+            group_cfg = getattr(env_cfg.observations, group_name)
+            if hasattr(group_cfg, "__dict__"):
+                for term_name in list(group_cfg.__dict__.keys()):
+                    term_cfg = getattr(group_cfg, term_name)
+                    # 检查 sensor_cfg 是否指向了被删除的相机
+                    if hasattr(term_cfg, "sensor_cfg") and term_cfg.sensor_cfg is not None:
+                        if term_cfg.sensor_cfg.name in default_cams:
+                            setattr(group_cfg, term_name, None)
+                            print(f"[INFO] Cleared stale observation: {group_name}/{term_name}")
+
     # Add Ring Cameras around the grid (Only if enable_cameras is requested)
     if getattr(args_cli, "enable_cameras", False):
         from isaaclab.sensors import TiledCameraCfg
@@ -558,9 +608,9 @@ def main():
                 torch.tensor([euler[2]], device=args_cli.device)
             ).tolist()[0]
             # OffsetCfg expects (w, x, y, z)
-            quat_wxyz = (q[0], q[1], q[2], q[3])
+            quat_w+xyz = (q[0], q[1], q[2], q[3+])
 
-            # 使用高性能 TiledCamera 替换传统 Camera
+            # 使用高性能 Tile+dCamera 替换传统 Camera
             setattr(env_cfg.scene, cam_name, TiledCameraCfg(
                 prim_path=f"{{ENV_REGEX_NS}}/{cam_name}",
                 update_period=0.0,  # 0.0 表示每物理步更新一次
@@ -648,8 +698,8 @@ def main():
 
     def prepare_environment(env_ids):
         """Prepare environmental targets and reset cube physics"""
-        # 1. Apply fixed targets
-        sm.set_env_targets(env_ids, fixed_master_targets)
+        # Note: Do not auto-assign targets here. Targets should be delivered
+        # by an external server/user one-by-one to simulate server-driven logic.
         
         # 2. Physics Teleport: Move ALL cubes to their initial aligned positions
         env_ids_tensor = torch.as_tensor(env_ids, device=env.unwrapped.device, dtype=torch.long)
@@ -688,10 +738,36 @@ def main():
         # 在没有正式进入 APPROACH 逻辑前，保持 quiet。
     
     print("[INFO]: Starting Dynamic Qwen-VL Stacking Loop...")
-    
+
+    # Helper: keyboard-driven simulator to deliver one target per Enter press
+    def start_keyboard_thread(sm_obj, targets_list, env_id=0):
+        def _worker():
+            idx = 0
+            print("[KeyboardSim] Press Enter to deliver next target (Ctrl-D to stop).")
+            while True:
+                try:
+                    input()
+                except EOFError:
+                    print("[KeyboardSim] EOF received, stopping keyboard thread.")
+                    break
+                if idx >= len(targets_list):
+                    print("[KeyboardSim] All targets have been delivered.")
+                    continue
+                sm_obj.set_env_targets([env_id], [targets_list[idx]])
+                # mark new task available for teleport logic
+                sm_obj.new_task_available[env_id] = True
+                print(f"[KeyboardSim] Delivered target {idx} to env {env_id}")
+                idx += 1
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        return t
+
+    # Start keyboard simulator for env 0 (press Enter to send next fixed target)
+    kbd_thread = start_keyboard_thread(sm, fixed_master_targets, env_id=0)
+
+    # Server-driven: do not start until external coordinates are provided
     step_count = 0
-    # 将初始索引设为 -1，确保第一个方块 (Task 0) 也能触发瞬移逻辑
-    prev_task_indices = torch.full((env.unwrapped.num_envs,), -1, dtype=torch.long, device=env.unwrapped.device)
     
     while simulation_app.is_running():
         step_count += 1
@@ -708,31 +784,48 @@ def main():
         # 物理操作（瞬移、步进）
         # 处理方块“瞬移”逻辑：当任务索引增加时，将下一个方块移至取料点
         for env_id in range(env.unwrapped.num_envs):
-            curr_idx = sm.task_index[env_id].item()
-            if curr_idx > prev_task_indices[env_id]:
-                # 有新任务开始，检查对应的方块是否需要移到桌面上
-                if curr_idx < len(cube_names):
-                    next_cube_name = cube_names[curr_idx]
-                    print(f"[Env {env_id}] Teleporting {next_cube_name} to pick position.")
+            # Teleport when a new task is delivered by server/user
+            try:
+                new_task_av = bool(sm.new_task_available[env_id].item())
+            except Exception:
+                try:
+                    new_task_av = bool(sm.new_task_available[env_id])
+                except Exception:
+                    new_task_av = False
+            if new_task_av:
+                new_idx = int(sm.new_task_index[env_id].item())
+                if new_idx >= 0 and new_idx < len(cube_names):
+                    next_cube_name = cube_names[new_idx]
                     cube_asset = env.unwrapped.scene[next_cube_name]
-                    
-                    # 使用环境的原点坐标，将相对位置转换为世界位置
-                    env_origin = env.unwrapped.scene.env_origins[env_id]
-                    target_pos_w = torch.tensor([
-                        env_origin[0] + source_pick_pos_x,
-                        env_origin[1] + source_pick_pos_y,
-                        env_origin[2] + cube_size / 2.0
-                    ], device=env.unwrapped.device)
-                    
-                    # 修正：瞬移方块至取料点时保持正向对齐 (Yaw=0)
-                    target_quat_w = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.unwrapped.device)
-                    
-                    root_pose = torch.cat([target_pos_w, target_quat_w], dim=-1).unsqueeze(0)
-                    cube_asset.write_root_pose_to_sim(
-                        root_pose, 
-                        env_ids=torch.tensor([env_id], device=env.unwrapped.device, dtype=torch.int)
-                    )
-                prev_task_indices[env_id] = curr_idx
+                    # check current cube height: only teleport if cube is off-scene (z < 0.0)
+                    try:
+                        cube_pos_w = cube_asset.data.root_pos_w[env_id]
+                        cube_z = float(cube_pos_w[2].item()) if isinstance(cube_pos_w[2], torch.Tensor) else float(cube_pos_w[2])
+                    except Exception:
+                        cube_z = -1.0
+                    if cube_z > 0.01:
+                        print(f"[Env {env_id}] Skipping teleport for {next_cube_name}: already on table (z={cube_z:.3f}).")
+                    else:
+                        print(f"[Env {env_id}] Teleporting {next_cube_name} to pick position.")
+                        # 使用环境的原点坐标，将相对位置转换为世界位置
+                        env_origin = env.unwrapped.scene.env_origins[env_id]
+                        target_pos_w = torch.tensor([
+                            env_origin[0] + source_pick_pos_x,
+                            env_origin[1] + source_pick_pos_y,
+                            env_origin[2] + cube_size / 2.0
+                        ], device=env.unwrapped.device)
+
+                        # 瞬移方块至取料点时保持正向对齐 (Yaw=0)
+                        target_quat_w = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.unwrapped.device)
+
+                        root_pose = torch.cat([target_pos_w, target_quat_w], dim=-1).unsqueeze(0)
+                        cube_asset.write_root_pose_to_sim(
+                            root_pose,
+                            env_ids=torch.tensor([env_id], device=env.unwrapped.device, dtype=torch.int32)
+                        )
+                # 清除新任务标志，避免重复瞬移
+                sm.new_task_available[env_id] = False
+                sm.new_task_index[env_id] = -1
 
         # Step environment
         obs, reward, terminated, truncated, info = env.step(actions)

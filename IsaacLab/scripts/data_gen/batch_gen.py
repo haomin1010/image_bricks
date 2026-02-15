@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 """
-Script to spawn a table with a grid and a cube, then take a snapshot.
+Script to generate snapshots of a table with a grid and blocks based on JSON input.
 Usage:
     python batch_gen.py --enable_cameras
 """
