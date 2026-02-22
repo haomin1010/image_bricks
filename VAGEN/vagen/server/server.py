@@ -485,6 +485,9 @@ def get_stack_cube_env_cfg(task_name, device, num_envs, enable_cameras):
     # Add dataset-aligned cameras (Only if enable_cameras is requested)
     if enable_cameras:
         from isaaclab.sensors import CameraCfg, TiledCameraCfg
+        use_tiled = os.getenv("VAGEN_USE_TILED", "1") != "0"
+        cam_cfg_type = TiledCameraCfg if use_tiled else CameraCfg
+        print(f"[DEBUG]: Camera config type: {'TiledCameraCfg' if use_tiled else 'CameraCfg'}")
         # Use dataset-aligned camera parameters (copy from batch_gen.py)
         TABLE_HEIGHT = 1.03
         # Table prim in StackEnvCfg uses an init_state.pos of (0.0, 0.0, 1.03).
@@ -529,10 +532,24 @@ def get_stack_cube_env_cfg(task_name, device, num_envs, enable_cameras):
             # convert to table-relative coordinates by subtracting the table init pos
             pos = (pos[0] + TABLE_INIT_POS[0], pos[1] + TABLE_INIT_POS[1], pos[2] + TABLE_INIT_POS[2])
             rot = cam_cfg["rot"]
+            # Debug: log camera config before attaching to env
+            print(
+                "[DEBUG]: Adding tiled camera",
+                {
+                    "name": cam_name,
+                    "prim_path": f"{{ENV_REGEX_NS}}/{cam_name}",
+                    "pos": pos,
+                    "rot": rot,
+                    "width": 224,
+                    "height": 224,
+                    "data_types": ["rgb"],
+                    "clipping_range": (0.01, 1000.0),
+                },
+            )
             setattr(
                 env_cfg.scene,
                 cam_name,
-                TiledCameraCfg(
+                cam_cfg_type(
                     prim_path=f"{{ENV_REGEX_NS}}/{cam_name}",
                     update_period=0.0,
                     height=224,

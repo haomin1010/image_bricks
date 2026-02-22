@@ -121,6 +121,7 @@ UR10_LONG_SUCTION_CFG.init_state.joint_pos = {
 """Configuration of UR10 arm with long suction gripper."""
 
 UR10_SHORT_SUCTION_CFG = UR10_LONG_SUCTION_CFG.copy()
+UR10_SHORT_SUCTION_CFG.spawn.usd_path = f"{ISAAC_NUCLEUS_DIR}/Robots/UniversalRobots/ur10/ur10.usd"
 UR10_SHORT_SUCTION_CFG.spawn.variants = {"Gripper": "Short_Suction"}
 
 """Configuration of UR10 arm with short suction gripper."""

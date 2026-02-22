@@ -262,7 +262,8 @@ class IsaacManagedEnv(GymImageEnv):
             # `step_done` and `step_info['success']`, but the episode should only
             # terminate on explicit submit actions. This prevents the LLM from
             # stopping planning after each successful low-level execution.
-            done = False
+            # Exception: timeout terminates the episode like RL time-limit.
+            done = True if step_info.get("timeout", False) else False
             metrics["turn_metrics"]["action_is_effective"] = True
 
             if step_info.get("success", False):

@@ -5,11 +5,15 @@ Creates a Ray actor interface for distributed access.
 """
 import os
 import sys
+from pathlib import Path
 import ray
 import logging
 import time
 from typing import Dict, Any, List
 import asyncio
+
+# Map ISAAC_NUCLEUS_DIR / ISAACLAB_NUCLEUS_DIR to local mirrored assets.
+os.environ.setdefault("ISAACLAB_ASSET_ROOT", "/data1/lhm/image_bricks/assets")
 
 
 @ray.remote(num_cpus=0.1, num_gpus=0)
@@ -27,7 +31,7 @@ class IsaacEnvServerProxy:
         self.commands = [] # List of (env_id, type, data)
         self.step_done_events = {}  # env_id -> asyncio.Event
         self.step_condition = asyncio.Condition()
-        self.step_done = {}  # env_id -> bool
+        self.step_done = {}  # env_id -> payload dict
         
         print(f"IsaacEnvServerProxy initialized with {num_envs} environment slots")
     
@@ -94,14 +98,23 @@ class IsaacEnvServerProxy:
             del self.step_done[env_id]
         images = self.latest_images.get(env_id, [])
 
-        done_flag, new_task_av, new_task_idx = ret
-        done_bool = bool(done_flag)
+        done_bool = bool(ret.get("done", False))
+        success_bool = bool(ret.get("success", False))
+        timeout_bool = bool(ret.get("timeout", False))
+        new_task_av = bool(ret.get("new_task_available", False))
+        new_task_idx = int(ret.get("new_task_index", -1))
 
-        info = {"success": done_bool, "env_id": env_id, "new_task_available": new_task_av, "new_task_index": new_task_idx}
+        info = {
+            "success": success_bool,
+            "timeout": timeout_bool,
+            "env_id": env_id,
+            "new_task_available": new_task_av,
+            "new_task_index": new_task_idx,
+        }
         print(f"Proxy.remote_step returning for env={env_id} info={info}")
         return {
             "images": images,
-            "reward": 1.0 if done_bool else 0.0,
+            "reward": 1.0 if success_bool else 0.0,
             "done": done_bool,
             "obs_str": "Action executed",
             "info": info,
@@ -111,13 +124,21 @@ class IsaacEnvServerProxy:
         """Render current state of a specific environment slot."""
         return self.latest_images.get(env_id, [])
     
-    async def _set_step_done(self, env_id, done, new_task_available=False, new_task_index=-1):
+    async def _set_step_done(self, env_id, done, success=None, timeout=False, new_task_available=False, new_task_index=-1):
         """Mark a step done for a trainer waiting on env_id.
 
         This async method stores the payload and notifies the condition
         so any awaiting `remote_step` will wake and proceed.
         """
-        payload = (bool(done), bool(new_task_available), int(new_task_index))
+        if success is None:
+            success = bool(done)
+        payload = {
+            "done": bool(done),
+            "success": bool(success),
+            "timeout": bool(timeout),
+            "new_task_available": bool(new_task_available),
+            "new_task_index": int(new_task_index),
+        }
         self.step_done[env_id] = payload
         print(f"Proxy._set_step_done called env={env_id} payload={payload}")
         # Notify any waiters
@@ -152,6 +173,29 @@ def main():
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     print(f"Isaac Sim sees GPUs: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
 
+    # Ensure IsaacLab editable installs still resolve after moving the repo.
+    # We prepend the local IsaacLab source paths if they exist.
+    repo_root = Path(__file__).resolve().parents[3]
+    isaac_source_root = repo_root / "IsaacLab" / "source"
+    isaac_modules = [
+        "isaaclab",
+        "isaaclab_assets",
+        "isaaclab_contrib",
+        "isaaclab_mimic",
+        "isaaclab_rl",
+        "isaaclab_tasks",
+    ]
+    added_paths = []
+    for mod in isaac_modules:
+        candidate = isaac_source_root / mod
+        if candidate.is_dir():
+            candidate_str = str(candidate)
+            if candidate_str not in sys.path:
+                sys.path.insert(0, candidate_str)
+                added_paths.append(candidate_str)
+    if added_paths:
+        print(f"Added IsaacLab paths to sys.path: {added_paths}")
+
     # Import Isaac AFTER Ray and ENV setup
     from isaaclab.app import AppLauncher
     import torch
@@ -183,6 +227,21 @@ def main():
     app_launcher = AppLauncher(launcher_args)
     simulation_app = app_launcher.app
     print("Isaac Simulation App launched successfully")
+    # Debug: print camera/render settings
+    shutdown_reason = "normal exit"
+    try:
+        import carb
+        settings_iface = carb.settings.get_settings()
+        print(
+            "[DEBUG]: carb settings",
+            {
+                "/isaaclab/cameras_enabled": settings_iface.get("/isaaclab/cameras_enabled"),
+                "/app/renderer": settings_iface.get("/app/renderer"),
+                "/rtx/enableRayTracing": settings_iface.get("/rtx/enableRayTracing"),
+            },
+        )
+    except Exception as e:
+        print(f"[DEBUG]: Failed to read carb settings: {e}")
     
     # Import after app launch
     import gymnasium as gym
@@ -224,6 +283,28 @@ def main():
             cfg = getattr(scene, name)
             pos = getattr(cfg.init_state, "pos", None)
             rot = getattr(cfg.init_state, "rot", None)
+
+    # Debug: print configured camera sensors before env creation
+    try:
+        cam_candidates = [n for n in dir(env_cfg.scene) if n.startswith("camera")]
+        if cam_candidates:
+            print("[DEBUG]: Camera sensors on env_cfg.scene:")
+            for cam_name in sorted(cam_candidates):
+                cam_cfg = getattr(env_cfg.scene, cam_name, None)
+                if cam_cfg is None:
+                    print(f"  - {cam_name}: None")
+                    continue
+                # best-effort attribute dump
+                print(
+                    f"  - {cam_name}: prim_path={getattr(cam_cfg, 'prim_path', None)}, "
+                    f"size=({getattr(cam_cfg, 'width', None)}x{getattr(cam_cfg, 'height', None)}), "
+                    f"data_types={getattr(cam_cfg, 'data_types', None)}, "
+                    f"spawn={type(getattr(cam_cfg, 'spawn', None)).__name__}"
+                )
+        else:
+            print("[DEBUG]: No camera sensors found on env_cfg.scene.")
+    except Exception as e:
+        print(f"[DEBUG]: Failed to enumerate camera sensors: {e}")
     
     env = gym.make(config["task"], cfg=env_cfg)
     print(f"Environment '{config['task']}' created")
@@ -317,20 +398,30 @@ def main():
                 sm_state_now = int(sm.state[env_id].item())
 
                 init_val = step_initial_task_idx[env_id]
-                if isinstance(init_val, tuple):
+                if isinstance(init_val, dict):
+                    init_idx = int(init_val.get("init_idx", 0))
+                    was_submit = bool(init_val.get("was_submit", False))
+                    submit_success = init_val.get("submit_success", None)
+                elif isinstance(init_val, tuple):
                     init_idx, was_submit = init_val
+                    submit_success = None
                 else:
                     init_idx = int(init_val)
                     was_submit = False
+                    submit_success = None
 
                 if (task_idx_now is not None and task_idx_now > init_idx) or sm_state_now == -1:
-                    # Decide done flag: only return True for explicit submit actions
+                    # Decide done/success: explicit submit ends episode; otherwise keep running
                     done_flag = True if was_submit else False
+                    if submit_success is None:
+                        success_flag = done_flag
+                    else:
+                        success_flag = bool(submit_success)
                     # Capture new-task snapshot BEFORE clearing it so trainer/LLM receives accurate info
                     num_tasks = int(sm.num_tasks_per_env[env_id].item())
                     new_av = bool(sm.new_task_available[env_id].item())
                     new_idx = int(sm.new_task_index[env_id].item())
-                    proxy_actor._set_step_done.remote(env_id, done_flag, new_av, new_idx)
+                    proxy_actor._set_step_done.remote(env_id, done_flag, success=success_flag, timeout=False, new_task_available=new_av, new_task_index=new_idx)
                     print(f"Marked step done for env {env_id} (task_idx: {task_idx_now} state: {sm_state_now}) done={done_flag}")
                     # Emit detailed debug snapshot for the trainer to see after success
                     print(
@@ -360,7 +451,11 @@ def main():
                     # Support explicit submission commands first (mirror actor behavior)
                     is_submit = isinstance(goal, dict) and goal.get("type") == "submit"
                     # Store initial task index and whether this was a submit
-                    step_initial_task_idx[env_id] = (sm.task_index[env_id].item(), is_submit)
+                    step_initial_task_idx[env_id] = {
+                        "init_idx": int(sm.task_index[env_id].item()),
+                        "was_submit": bool(is_submit),
+                        "submit_success": None,
+                    }
                     if is_submit:
                         task_idx = int(sm.task_index[env_id].item())
                         num_tasks = int(sm.num_tasks_per_env[env_id].item())
@@ -368,6 +463,7 @@ def main():
                         print(
                             f"[Proxy] Submission for env {env_id}: task_idx={task_idx} num_tasks={num_tasks} success={is_success}"
                         )
+                        step_initial_task_idx[env_id]["submit_success"] = bool(is_success)
                         continue
 
                     # Strict parsing for placement goals: require dict with explicit 'x','y','z' keys
@@ -397,6 +493,30 @@ def main():
                     target_pos_w = env_origin + torch.tensor([target_x, target_y, target_z], device=env_origin.device)
 
                     current_task_idx = int(sm.task_index[env_id].item())
+                    max_tasks = int(getattr(sm, "max_tasks", sm.target_positions.shape[1]))
+                    if current_task_idx >= max_tasks:
+                        print(
+                            f"[Proxy] Warning: env {env_id} task_idx={current_task_idx} exceeds max_tasks={max_tasks}. "
+                            "Treating as timeout termination."
+                        )
+                        try:
+                            sm.num_tasks_per_env[env_id] = max_tasks
+                            sm.state[env_id] = sm.IDLE
+                        except Exception:
+                            pass
+                        # Immediately terminate this step as a timeout (done=True, success=False)
+                        proxy_actor._set_step_done.remote(
+                            env_id,
+                            True,
+                            success=False,
+                            timeout=True,
+                            new_task_available=False,
+                            new_task_index=-1,
+                        )
+                        print(f"[Proxy->Trainer] env={env_id} TIMEOUT termination (task_idx={current_task_idx} max_tasks={max_tasks})")
+                        if env_id in step_initial_task_idx:
+                            del step_initial_task_idx[env_id]
+                        continue
                     sm.num_tasks_per_env[env_id] = current_task_idx + 1
                     sm.target_positions[env_id, current_task_idx] = target_pos_w
                     sm.state[env_id] = sm.APPROACH_CUBE
@@ -536,9 +656,18 @@ def main():
             obs, _, _, _, _ = env.step(actions)
 
     except KeyboardInterrupt:
+        shutdown_reason = "keyboard interrupt"
         print("Received shutdown signal")
+    except SystemExit as exc:
+        shutdown_reason = f"system exit ({exc.code})"
+        raise
+    except Exception as exc:
+        shutdown_reason = f"exception: {type(exc).__name__}: {exc}"
+        print(f"Unhandled exception in Isaac server: {exc}")
+        import traceback
+        traceback.print_exc()
     finally:
-        print("Shutting down Isaac server...")
+        print(f"Shutting down Isaac server... reason={shutdown_reason}")
         # Close streaming writer if opened
         if writer is not None:
             writer.close()
@@ -569,4 +698,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

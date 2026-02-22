@@ -27,7 +27,13 @@ import omni.client
 # import logger
 logger = logging.getLogger(__name__)
 
-NUCLEUS_ASSET_ROOT_DIR = carb.settings.get_settings().get("/persistent/isaac/asset_root/cloud")
+_LOCAL_ASSET_ROOT_ENV = "ISAACLAB_ASSET_ROOT"
+_DEFAULT_LOCAL_ASSET_ROOT = "/data1/lhm/image_bricks/assets"
+NUCLEUS_ASSET_ROOT_DIR = os.environ.get(_LOCAL_ASSET_ROOT_ENV) or carb.settings.get_settings().get(
+    "/persistent/isaac/asset_root/cloud"
+)
+if not NUCLEUS_ASSET_ROOT_DIR:
+    NUCLEUS_ASSET_ROOT_DIR = _DEFAULT_LOCAL_ASSET_ROOT
 """Path to the root directory on the Nucleus Server."""
 
 NVIDIA_NUCLEUS_DIR = f"{NUCLEUS_ASSET_ROOT_DIR}/NVIDIA"

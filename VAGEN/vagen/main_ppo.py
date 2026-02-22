@@ -20,7 +20,9 @@ import os
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
 
 import socket
-
+import time
+import subprocess
+import sys
 import hydra
 import ray
 from omegaconf import OmegaConf
@@ -42,7 +44,24 @@ def main(config):
     Args:
         config_dict: Hydra configuration dictionary containing training parameters.
     """
-    run_ppo(config)
+    shutdown_reason = "normal exit"
+    try:
+        run_ppo(config)
+    except KeyboardInterrupt:
+        shutdown_reason = "keyboard interrupt"
+        print("Received shutdown signal")
+        raise
+    except SystemExit as exc:
+        shutdown_reason = f"system exit ({exc.code})"
+        raise
+    except Exception as exc:
+        shutdown_reason = f"exception: {type(exc).__name__}: {exc}"
+        print(f"Unhandled exception in trainer: {exc}")
+        import traceback
+        traceback.print_exc()
+        raise
+    finally:
+        print(f"Training process exiting... reason={shutdown_reason}")
 
 
 # Define a function to run the PPO-like training process
@@ -98,79 +117,53 @@ def run_ppo(config, task_runner_class=None) -> None:
                             break
         
         isaac_server_process = None
-        isaac_log_file = None
-        if need_isaac_server:
-            print(">>> Isaac backend detected. Starting IsaacEnvServer...")
+    if need_isaac_server:
+        print(">>> Isaac backend detected. Starting IsaacEnvServer...")
+        try:
+            ray.get_actor("IsaacEnvServer")
+            print(">>> Found existing IsaacEnvServer.")
+        except ValueError:
+            print(">>> IsaacEnvServer NOT found. Starting in separate process (main thread required)...")
             try:
-                ray.get_actor("IsaacEnvServer")
-                print(">>> Found existing IsaacEnvServer.")
-            except ValueError:
-                print(">>> IsaacEnvServer NOT found. Starting in separate process (main thread required)...")
-                try:
-                    import subprocess
-                    import sys
-                    import time
-                    
-                    # Start Isaac server in dedicated process
-                    server_script = os.path.join(os.path.dirname(__file__), "server", "start_isaac_server.py")
-                    cmd = [
-                        sys.executable,
-                        server_script,
-                        "--num-envs", "64",
-                        "--device", "cuda:0",
-                        "--task", "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
-                        "--headless"
-                    ]
-                    
-                    env = os.environ.copy()
-                    # Server will auto-connect to the same Ray cluster
-                    env["CUDA_VISIBLE_DEVICES"] = "0"  # Isaac on GPU 0
-                    
-                    print(f">>> Starting Isaac server: {' '.join(cmd)}")
-                    # Redirect output to log file for debugging
-                    isaac_log_file = open("/tmp/isaac_server.log", "w")
-                    isaac_server_process = subprocess.Popen(
-                        cmd,
-                        env=env,
-                        stdout=isaac_log_file,
-                        stderr=subprocess.STDOUT,
-                        text=True
-                    )
-                    
-                    # Wait for server to register (poll for actor)
-                    print(">>> Waiting for IsaacEnvServer to register (max 120s)...")
-                    for i in range(120):
-                        try:
-                            ray.get_actor("IsaacEnvServer")
-                            print(f">>> IsaacEnvServer registered successfully after {i+1}s")
-                            break
-                        except ValueError:
-                            time.sleep(1)
-                    else:
-                        # Timeout - show Isaac server logs
-                        print(f">>> Isaac server process status: {'running' if isaac_server_process.poll() is None else 'exited'}")
-                        if isaac_server_process.poll() is not None:
-                            print(f">>> Isaac server exit code: {isaac_server_process.returncode}")
-                        print(">>> Isaac server log (last 50 lines):")
-                        try:
-                            with open("/tmp/isaac_server.log", "r") as f:
-                                lines = f.readlines()
-                                for line in lines[-50:]:
-                                    print(f"    {line.rstrip()}")
-                        except Exception as e:
-                            print(f">>> Could not read Isaac server log: {e}")
-                        raise TimeoutError("IsaacEnvServer failed to register within 120s")
-                    
-                except Exception as e:
-                    print(f">>> CRITICAL: Failed to auto-start IsaacEnvServer: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    if isaac_server_process:
-                        isaac_server_process.kill()
-                    raise
-        else:
-            print(">>> Mock backend detected. Skipping IsaacEnvServer startup.")
-    
+                # Start Isaac server in dedicated process
+                server_script = os.path.join(os.path.dirname(__file__), "server", "start_isaac_server.py")
+                server_script = os.path.abspath(server_script)
+                cmd = [
+                    sys.executable,
+                    server_script,
+                    "--num-envs", "8",
+                    "--device", "cpu",
+                    "--task", "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
+                    "--headless"
+                ]
+
+                env = os.environ.copy()
+                # Server will auto-connect to the same Ray cluster
+                # Run Isaac on GPU0 (exclusive for Isaac)
+                env["CUDA_VISIBLE_DEVICES"] = "0"
+                
+                print(f">>> Starting Isaac server in foreground (logs will print here): {' '.join(cmd)}")
+                # Start Isaac server as a child process that inherits stdout/stderr
+                # so its logs appear in this main process's terminal for easier debugging.
+                isaac_server_process = subprocess.Popen(
+                    cmd,
+                    env=env,
+                    text=True
+                )
+                
+                # Wait for server to register (poll for actor)
+                print(">>> Waiting for IsaacEnvServer to register (max 120s)...")
+                for i in range(1200):
+                    try:
+                        ray.get_actor("IsaacEnvServer")
+                        print(f">>> IsaacEnvServer registered successfully after {i+1}s")
+                        break
+                    except ValueError:
+                        time.sleep(1)
+                else:
+                    print(">>> Timeout waiting for Isaac server.")
+            except Exception as e:
+                print(f">>> Failed to start Isaac server: {e}")
     # We should also ensure the TaskRunner uses the same Ray session
     if task_runner_class is None:
         task_runner_class = ray.remote(num_cpus=1)(TaskRunner)  # please make sure main_task is not scheduled on head
@@ -202,7 +195,6 @@ def run_ppo(config, task_runner_class=None) -> None:
             if 'isaac_server_process' in locals() and isaac_server_process is not None:
                 print(">>> Terminating Isaac server subprocess...")
                 isaac_server_process.terminate()
-                import time
                 time.sleep(2)
                 if isaac_server_process.poll() is None:
                     print(">>> Force killing Isaac server...")
