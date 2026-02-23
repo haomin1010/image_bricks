@@ -19,6 +19,7 @@ import copy
 import isaaclab.utils.math as math_utils
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
+from pxr import Gf, Sdf, UsdPhysics
 
 # Isaac Lab and Gym imports will be deferred inside the Actor to ensure 
 # they are only loaded in the process that has the simulation_app.
@@ -60,6 +61,9 @@ class StackingStateMachine:
         
         # --- Magic Suction 状态 ---
         self.attached_cube_idx = torch.full((num_envs,), -1, dtype=torch.long, device=device)
+        # GPU-native suction: create/destroy fixed joints per env.
+        self._stage = None
+        self._active_joint_paths = [None] * num_envs
         
         # 记录方块抓取位置：基于网格动态计算（默认放在网格右侧，垂直居中）
         half_width = (grid_size * cell_size) / 2.0
@@ -89,10 +93,106 @@ class StackingStateMachine:
         self.ROTATE_TARGET = 8
         self.ROTATE_BACK = 9
 
+    def set_stage(self, stage):
+        self._stage = stage
+
+    def _joint_path_for_env(self, env_id: int) -> str:
+        return f"/World/envs/env_{env_id}/SuctionAttachJoint"
+
+    def _ee_body_path_for_env(self, env_id: int) -> str:
+        return f"/World/envs/env_{env_id}/Robot/ee_link"
+
+    def _cube_body_path_for_env(self, env_id: int, cube_idx: int) -> str:
+        return f"/World/envs/env_{env_id}/Cube_{cube_idx + 1}"
+
+    def _detach_env_joint(self, env_id: int):
+        if self._stage is None:
+            return
+        joint_path = self._active_joint_paths[env_id] or self._joint_path_for_env(env_id)
+        try:
+            self._stage.RemovePrim(joint_path)
+        except Exception:
+            pass
+        self._active_joint_paths[env_id] = None
+        self.attached_cube_idx[env_id] = -1
+
+    def _attach_env_joint(self, env_id: int, cube_idx: int, ee_pos_w: torch.Tensor, cube_pos_w: torch.Tensor):
+        if self._stage is None:
+            return False
+
+        joint_path = self._joint_path_for_env(env_id)
+        ee_body_path = self._ee_body_path_for_env(env_id)
+        cube_body_path = self._cube_body_path_for_env(env_id, cube_idx)
+
+        ee_prim = self._stage.GetPrimAtPath(ee_body_path)
+        cube_prim = self._stage.GetPrimAtPath(cube_body_path)
+        if not ee_prim.IsValid() or not cube_prim.IsValid():
+            return False
+
+        try:
+            self._stage.RemovePrim(joint_path)
+        except Exception:
+            pass
+
+        joint = UsdPhysics.FixedJoint.Define(self._stage, joint_path)
+        joint_prim = joint.GetPrim()
+        joint_prim.CreateAttribute("physics:jointEnabled", Sdf.ValueTypeNames.Bool, True).Set(True)
+        joint_prim.CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool, True).Set(False)
+        joint_prim.CreateAttribute("physics:excludeFromArticulation", Sdf.ValueTypeNames.Bool, True).Set(True)
+
+        # Keep current relative pose to avoid snap when attaching.
+        local_pos0 = Gf.Vec3f(0.0, 0.0, 0.0)
+        local_pos1 = Gf.Vec3f(
+            float(ee_pos_w[0].item() - cube_pos_w[0].item()),
+            float(ee_pos_w[1].item() - cube_pos_w[1].item()),
+            float(ee_pos_w[2].item() - cube_pos_w[2].item()),
+        )
+        joint_prim.CreateAttribute("physics:localPos0", Sdf.ValueTypeNames.Point3f, True).Set(local_pos0)
+        joint_prim.CreateAttribute("physics:localPos1", Sdf.ValueTypeNames.Point3f, True).Set(local_pos1)
+        joint_prim.CreateAttribute("physics:localRot0", Sdf.ValueTypeNames.Quatf, True).Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint_prim.CreateAttribute("physics:localRot1", Sdf.ValueTypeNames.Quatf, True).Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateBody0Rel().SetTargets([Sdf.Path(ee_body_path)])
+        joint.CreateBody1Rel().SetTargets([Sdf.Path(cube_body_path)])
+
+        self._active_joint_paths[env_id] = joint_path
+        self.attached_cube_idx[env_id] = cube_idx
+        return True
+
     def apply_magic_suction(self, obs):
-        # No-op: revert to environment's native suction/attachment logic.
-        # The environment expects gripper commands via actions to handle attachments.
-        return
+        # GPU-native suction: emulate attachment by dynamically creating/removing fixed joints.
+        if self._stage is None:
+            return
+
+        env_origins = self.scene.env_origins
+        ee_pos_local = obs["policy"]["eef_pos"]
+        ee_pos_w = ee_pos_local + env_origins
+
+        for env_id in range(self.num_envs):
+            state_i = int(self.state[env_id].item())
+
+            # Release on explicit opening/idle states.
+            if state_i in [self.RELEASE, self.RETRACT, -1, self.IDLE]:
+                if int(self.attached_cube_idx[env_id].item()) >= 0:
+                    self._detach_env_joint(env_id)
+                continue
+
+            # Attach around descend/grasp/transport phases.
+            if state_i not in [self.DESCEND_CUBE, self.GRASP, self.LIFT, self.APPROACH_TARGET, self.DESCEND_TARGET]:
+                continue
+            if int(self.attached_cube_idx[env_id].item()) >= 0:
+                continue
+
+            cube_idx = int(self.task_index[env_id].item())
+            if cube_idx < 0 or cube_idx >= len(self.cube_names):
+                continue
+
+            cube_name = self.cube_names[cube_idx]
+            cube_pos_w = self.scene[cube_name].data.root_pos_w[env_id]
+            dist = torch.norm(ee_pos_w[env_id] - cube_pos_w).item()
+            if dist > 0.03:
+                continue
+
+            self._attach_env_joint(env_id, cube_idx, ee_pos_w[env_id], cube_pos_w)
 
     def set_env_targets(self, env_ids, targets):
         """Update targets for specific environments. targets: list of (x,y,z) tuples"""
@@ -119,6 +219,9 @@ class StackingStateMachine:
                 self.state[env_id] = self.APPROACH_CUBE
 
     def reset_envs(self, env_ids):
+        env_ids_list = env_ids.tolist() if isinstance(env_ids, torch.Tensor) else list(env_ids)
+        for env_id in env_ids_list:
+            self._detach_env_joint(int(env_id))
         self.state[env_ids] = self.IDLE
         self.wait_timer[env_ids] = 0
         self.task_index[env_ids] = 0
@@ -149,11 +252,8 @@ class StackingStateMachine:
         # Get cube positions and orientations
         cube_assets = [self.scene[name] for name in self.cube_names]
         
-        # 修正动作空间大小：如果启用了 Magic Suction，底层环境可能不再接收吸力指令
-        # 我们根据环境实际的动作管理器的项来动态调整
-        num_actions = 7
-        if "surface_gripper" not in self.scene.keys():
-            num_actions = 6 # 仅 [vx, vy, vz, wx, wy, wz]
+        # Dynamically infer action dimension from observation to avoid 6/7D mismatches.
+        num_actions = int(policy_obs["actions"].shape[-1])
             
         actions = torch.zeros((self.num_envs, num_actions), device=self.device)
         
@@ -387,10 +487,28 @@ def get_stack_cube_env_cfg(task_name, device, num_envs, enable_cameras):
     if hasattr(env_cfg, "device"): 
         env_cfg.device = device
     
-    # 保留内置的 SurfaceGripper 插件定义与吸盘相关动作/观测
-    # 以前的实现曾尝试移除该插件与相关动作/观测以绕过兼容性问题,
-    # 但现在我们选择保留原始配置并让环境自身处理吸附逻辑。
-    if hasattr(env_cfg.scene, "surface_gripper"):
+    task_name_lower = task_name.lower()
+    use_gpu_joint_suction = ("ur10" in task_name_lower) and ("suction" in task_name_lower) and str(device).startswith("cuda")
+    if use_gpu_joint_suction:
+        # SurfaceGripper is CPU-only in Isaac Lab. For GPU simulation we disable plugin-side suction
+        # and drive attachment using runtime fixed joints from the state machine.
+        if hasattr(env_cfg.scene, "surface_gripper"):
+            env_cfg.scene.surface_gripper = None
+        if hasattr(env_cfg.actions, "gripper_action"):
+            env_cfg.actions.gripper_action = None
+        if hasattr(env_cfg.observations, "policy") and hasattr(env_cfg.observations.policy, "gripper_pos"):
+            env_cfg.observations.policy.gripper_pos = None
+        if hasattr(env_cfg.observations, "subtask_terms"):
+            if hasattr(env_cfg.observations.subtask_terms, "grasp_1"):
+                env_cfg.observations.subtask_terms.grasp_1 = None
+            if hasattr(env_cfg.observations.subtask_terms, "stack_1"):
+                env_cfg.observations.subtask_terms.stack_1 = None
+            if hasattr(env_cfg.observations.subtask_terms, "grasp_2"):
+                env_cfg.observations.subtask_terms.grasp_2 = None
+            if hasattr(env_cfg.observations.subtask_terms, "stack_2"):
+                env_cfg.observations.subtask_terms.stack_2 = None
+        print("[INFO]: GPU mode detected for UR10 suction. Using joint-based suction (SurfaceGripper disabled).")
+    elif hasattr(env_cfg.scene, "surface_gripper"):
         print("[INFO]: Keeping scene.surface_gripper enabled (using environment-native suction).")
 
     # 修复 UR10 Suction 的配置 Bug: 

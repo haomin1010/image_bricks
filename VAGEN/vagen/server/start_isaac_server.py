@@ -325,6 +325,7 @@ def main():
         grid_origin=grid_origin,
         cell_size=cell_size,
     )
+    sm.set_stage(env.unwrapped.sim.stage)
     print("State machine initialized")
     
     step_initial_task_idx = {}  # env_id -> (initial task index, is_submit) for step completion check
@@ -654,6 +655,7 @@ def main():
                 sm.new_task_available[env_id] = False
                 sm.new_task_index[env_id] = -1
             obs, _, _, _, _ = env.step(actions)
+            sm.apply_magic_suction(obs)
 
     except KeyboardInterrupt:
         shutdown_reason = "keyboard interrupt"
