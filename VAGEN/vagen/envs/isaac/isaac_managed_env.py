@@ -1,21 +1,26 @@
 """
 Isaac Managed Environment — GymImageEnv proxy backed by the EnvManager system.
-This environment is a drop-in replacement for :class:`BrickIsaac` in the VAGEN
-agent loop.  Instead of holding a local simulator, it delegates all
-reset / step / render calls to a shared :class:`IsaacSkillExecutor` via the
-per-worker :class:`EnvCoordinator`.
-From the agent loop's perspective this behaves identically to any other
-``GymImageEnv``:  ``reset(seed)`` returns multi-view images + info, and
-``step(action_str)`` parses the LLM output, executes the high-level goal
-remotely, and returns the formatted observation.
+
+This environment supports two action types from the VLM:
+
+1. **Query** – ``{"query": [cam_id, ...]}``
+   Returns images from the requested cameras.  No physics step.
+2. **Place** – ``{"x": INT, "y": INT, "z": INT}``
+   Places a brick and returns camera-0's image.
+3. **Submit** – ``submit``
+   Ends the episode.
+
 Usage
 -----
 Register this class in the env_registry config::
+
     env_registry:
       brick_isaac: vagen.envs.brick_isaac.IsaacManagedEnv
+
 The ``env_config`` dict in the dataset YAML should contain at least:
+
 - ``num_total_envs`` (int): Total sub-envs in the Isaac DirectVectorEnv.
-- Standard BrickIsaac fields (``n_views``, ``image_size``, ``max_steps``, …).
+- ``n_cameras`` (int): Number of cameras available (IDs 0 .. n_cameras-1).
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from .utils.prompt import (
     action_template,
     format_prompt,
     init_observation_template,
+    query_result_template,
     system_prompt,
 )
 from .utils.utils import parse_response
@@ -51,8 +57,8 @@ class IsaacManagedEnvConfig:
     # Executor / manager settings
     num_total_envs: int = 64  # total sub-envs in the DirectVectorEnv
 
-    # Observation
-    n_views: int = 3
+    # Cameras
+    n_cameras: int = 3  # total cameras (IDs 0 .. n_cameras-1)
     image_size: Tuple[int, int] = (224, 224)
 
     # Step limits
@@ -127,6 +133,7 @@ class IsaacManagedEnv(GymImageEnv):
     async def reset(self, seed: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Allocate a sub-env ID (on first call) and reset it on the Isaac side.
+        Returns camera-0's image as the initial observation.
         """
         server = await self._get_server()
 
@@ -138,32 +145,39 @@ class IsaacManagedEnv(GymImageEnv):
         response = await server.remote_reset.remote(
             self._sub_env_id, seed
         )
-        images = response["images"]
+        all_images = response["images"]
         env_info = response["info"]
 
         self.total_reward = 0.0
         self.steps_taken = 0
         self.trajectory = []
 
-        # Build initial observation text
+        # Build initial observation: camera 0 only
         target_desc = ""
         if "target_description" in env_info:
             target_desc = env_info["target_description"] + "\n"
 
+        cam0_images = [all_images[0]] if len(all_images) > 0 else []
         obs_text = target_desc + init_observation_template(
-            self._img_placeholders()
+            img_placeholder=self.config.image_placeholder,
         )
-        obs = self._make_multi_image_obs(obs_text, images)
+        obs = self._make_multi_image_obs(obs_text, cam0_images)
         return obs, env_info
 
     async def step(
         self, action_str: str
     ) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         """
-        Parse the LLM's coordinate, execute the high-level goal remotely,
-        and return the formatted observation.
+        Parse the LLM action and execute it.
+
+        Supported actions:
+        - **Query**:  ``{"query": [cam_id, ...]}`` — returns requested camera views.
+        - **Place**:  ``{"x": INT, "y": INT, "z": INT}`` — places a brick, returns camera 0.
+        - **Submit**: ``submit`` — ends the episode.
+
         Args:
             action_str: Raw LLM output string.
+
         Returns:
             ``(obs, reward, done, info)``
         """
@@ -177,12 +191,13 @@ class IsaacManagedEnv(GymImageEnv):
         info.update(parsed)
 
         coordinate = parsed.get("coordinate")
+        query_cameras = parsed.get("query_cameras")
         is_submit = parsed.get("is_submit", False)
         format_correct = parsed.get("format_correct", False)
 
         metrics = {
             "turn_metrics": {
-                "action_is_valid": format_correct and (coordinate is not None or is_submit),
+                "action_is_valid": format_correct,
                 "action_is_effective": False,
             },
             "traj_metrics": {
@@ -190,59 +205,59 @@ class IsaacManagedEnv(GymImageEnv):
             },
         }
 
-        if coordinate is None and not is_submit:
-            # Parse failure — render current state and show error
-            server = await self._get_server()
-            images = await server.render.remote(self._sub_env_id)
-            # Prefer targeted feedback when think tag is missing
-            if parsed.get("missing_think", False):
+        if query_cameras is not None:
+            # ----------------------------------------------------------
+            # Query action — return requested camera views
+            # ----------------------------------------------------------
+            # Validate camera IDs
+            invalid_ids = [c for c in query_cameras if c >= self.config.n_cameras]
+            if invalid_ids:
+                # Some camera IDs out of range — treat as parse error
+                server = await self._get_server()
+                all_images = await server.render.remote(self._sub_env_id)
+                cam0_images = [all_images[0]] if len(all_images) > 0 else []
                 msg = (
-                    "Your response is missing the <think>...</think> reasoning tag. "
-                    "Please include a short reasoning inside <think> and then the answer. "
-                    "Example: <think>The bottom layer is missing at (2,3).</think>"
-                    "<answer>{{\"x\": 2, \"y\": 3, \"z\": 0}}</answer>"
+                    f"Invalid camera ID(s): {invalid_ids}. "
+                    f"Valid IDs are 0..{self.config.n_cameras - 1}."
                 )
+                obs = self._make_multi_image_obs(
+                    action_template(
+                        action_result=msg,
+                        img_placeholder=self.config.image_placeholder,
+                    ),
+                    cam0_images,
+                    action_str=action_str,
+                )
+                format_correct = False
+                metrics["turn_metrics"]["action_is_valid"] = False
             else:
-                msg = (
-                    "Could not parse your action. "
-                    "Example: <think>The bottom layer is missing at (2,3).</think>"
-                    "<answer>{{\"x\": 2, \"y\": 3, \"z\": 0}}</answer>"
+                server = await self._get_server()
+                all_images = await server.render.remote(self._sub_env_id)
+                selected_images = []
+                for cam_id in query_cameras:
+                    if cam_id < len(all_images):
+                        selected_images.append(all_images[cam_id])
+                    else:
+                        selected_images.append(
+                            Image.new("RGB", self.config.image_size, (0, 0, 0))
+                        )
+
+                img_phs = "\n".join(
+                    self.config.image_placeholder for _ in query_cameras
                 )
+                obs_text = query_result_template(
+                    camera_ids=query_cameras,
+                    img_placeholders=img_phs,
+                )
+                obs = self._make_multi_image_obs(
+                    obs_text, selected_images, action_str=action_str
+                )
+                metrics["turn_metrics"]["action_is_effective"] = True
 
-            obs = self._make_multi_image_obs(
-                action_template(
-                    action_result=msg,
-                    img_placeholders=self._img_placeholders(),
-                ),
-                images,
-                action_str=action_str,
-            )
-        elif is_submit:
-            # Handle submission
-            goal = {"type": "submit"}
-            server = await self._get_server()
-            response = await server.remote_step.remote(self._sub_env_id, goal)
-            
-            images = response["images"]
-            step_reward = response["reward"]
-            step_info = response["info"]
-
-            reward += step_reward
-            done = True # Submit always ends the episode
-            metrics["turn_metrics"]["action_is_effective"] = True
-
-            if step_info.get("success", False):
-                reward += self.config.success_reward
-                metrics["traj_metrics"]["success"] = True
-
-            obs_text = action_template(
-                action_result=response["obs_str"],
-                img_placeholders=self._img_placeholders(),
-            )
-            obs = self._make_multi_image_obs(obs_text, images, action_str=action_str)
-            info.update(step_info)
-        else:
-            # Submit high-level goal to the executor
+        elif coordinate is not None:
+            # ----------------------------------------------------------
+            # Place action — execute placement, return camera 0
+            # ----------------------------------------------------------
             goal = {
                 "x": coordinate["x"],
                 "y": coordinate["y"],
@@ -251,9 +266,39 @@ class IsaacManagedEnv(GymImageEnv):
             server = await self._get_server()
             response = await server.remote_step.remote(self._sub_env_id, goal)
 
-            images = response["images"]
+            all_images = response["images"]
             step_reward = response["reward"]
             step_done = response["done"]
+            step_info = response["info"]
+
+            reward += step_reward
+            done = step_done
+            metrics["turn_metrics"]["action_is_effective"] = True
+
+            if step_info.get("success", False):
+                reward += self.config.success_reward
+                metrics["traj_metrics"]["success"] = True
+
+            cam0_images = [all_images[0]] if len(all_images) > 0 else []
+            obs_text = action_template(
+                action_result=response["obs_str"],
+                img_placeholder=self.config.image_placeholder,
+            )
+            obs = self._make_multi_image_obs(
+                obs_text, cam0_images, action_str=action_str
+            )
+            info.update(step_info)
+
+        elif is_submit:
+            # ----------------------------------------------------------
+            # Submit action — end the episode
+            # ----------------------------------------------------------
+            goal = {"type": "submit"}
+            server = await self._get_server()
+            response = await server.remote_step.remote(self._sub_env_id, goal)
+
+            images = response["images"]
+            step_reward = response["reward"]
             step_info = response["info"]
 
             reward += step_reward
@@ -270,16 +315,41 @@ class IsaacManagedEnv(GymImageEnv):
                 reward += self.config.success_reward
                 metrics["traj_metrics"]["success"] = True
 
-            # Use server-generated description
+            cam0_images = [all_images[0]] if len(all_images) > 0 else []
             obs_text = action_template(
                 action_result=response["obs_str"],
-                img_placeholders=self._img_placeholders(),
+                img_placeholder=self.config.image_placeholder,
             )
-            obs = self._make_multi_image_obs(obs_text, images, action_str=action_str)
+            obs = self._make_multi_image_obs(
+                obs_text, cam0_images, action_str=action_str
+            )
             info.update(step_info)
 
-        # Format reward
-        if format_correct and coordinate is not None:
+        else:
+            # ----------------------------------------------------------
+            # Parse failure — show error with camera 0 view
+            # ----------------------------------------------------------
+            server = await self._get_server()
+            all_images = await server.render.remote(self._sub_env_id)
+            cam0_images = [all_images[0]] if len(all_images) > 0 else []
+
+            msg = (
+                "Could not parse your action. Valid formats:\n"
+                f'  Query cameras: {{"query": [0, 1]}}  (IDs 0..{self.config.n_cameras - 1})\n'
+                '  Place a brick: {"x": 2, "y": 3, "z": 0}\n'
+                "  Submit: submit"
+            )
+            obs = self._make_multi_image_obs(
+                action_template(
+                    action_result=msg,
+                    img_placeholder=self.config.image_placeholder,
+                ),
+                cam0_images,
+                action_str=action_str,
+            )
+
+        # Format reward for any correctly formatted action
+        if format_correct:
             reward += self.config.format_reward
 
         # Step limit
@@ -294,11 +364,12 @@ class IsaacManagedEnv(GymImageEnv):
         self.trajectory.append({
             "step_idx": self.steps_taken,
             "coordinate": coordinate,
+            "query_cameras": query_cameras,
             "is_submit": is_submit,
             "reward": reward,
             "success": info["success"],
             "raw_action": parsed.get("action_content", ""),
-            "thought": parsed.get("think_content", "")
+            "thought": parsed.get("think_content", ""),
         })
 
         if done:
@@ -319,68 +390,62 @@ class IsaacManagedEnv(GymImageEnv):
             self._sub_env_id = None
 
     # ------------------------------------------------------------------
-    # Helpers (same logic as BrickIsaac)
+    # Helpers
     # ------------------------------------------------------------------
 
     def _build_system_prompt(self) -> str:
         """Compose the full system prompt string."""
-        # Use checked system prompt for Isaac environment: if the composed
-        # prompt is malformed, return a concise corrective example so the
-        # LLM replies in a parseable format instead of producing invalid text.
         try:
             from .utils.prompt import get_checked_system_prompt
         except Exception:
-            # Fallback to original behavior on import error
-            fmt = format_prompt(add_example=self.config.use_example_in_sys_prompt)
-            return system_prompt() + "\n" + fmt
+            fmt = format_prompt(
+                n_cameras=self.config.n_cameras,
+                add_example=self.config.use_example_in_sys_prompt,
+            )
+            return system_prompt(n_cameras=self.config.n_cameras) + "\n" + fmt
 
-        return get_checked_system_prompt(add_example=self.config.use_example_in_sys_prompt)
-
-    def _img_placeholders(self) -> str:
-        """Return n image placeholder tokens separated by newlines."""
-        # Only provide placeholders for the first few turns to avoid hitting 
-        # token limits and causing desync between text and image list.
-        # Max 5 turns of images = 15 images total.
-        if self.steps_taken >= 6:
-            return "(Latest images omitted to save context)"
-            
-        return "\n".join(
-            self.config.image_placeholder for _ in range(self.config.n_views)
+        return get_checked_system_prompt(
+            n_cameras=self.config.n_cameras,
+            add_example=self.config.use_example_in_sys_prompt,
         )
 
     def _make_multi_image_obs(
-        self, obs_str: str, images: List[Image.Image], action_str: str = ""
+        self,
+        obs_str: str,
+        images: List[Image.Image],
+        action_str: str = "",
     ) -> Dict[str, Any]:
-        """Wrap an observation string and images into the standard obs dict."""
-        # Fundamental Fix: Hallucination Absorber
-        # In multi-turn context, if the model hallucinates vision tags in its response,
-        # the AgentLoop will store them in history, causing desync with the image list.
-        # We detect tags in action_str and provide dummy images to keep the counts aligned.
-        
+        """Wrap an observation string and a variable-length image list into
+        the standard obs dict.
+
+        Args:
+            obs_str: Observation text (with ``<image>`` placeholders matching
+                the number of *images*).
+            images: Actual images to include in the observation.
+            action_str: The previous VLM response (used to detect hallucinated
+                vision tags and inject dummy images for alignment).
+        """
+        # Hallucination absorber: if the model hallucinated vision tags in its
+        # response, inject dummy images so the tag count stays in sync.
         vision_start_tag = "<|vision_start|>"
         hallucinated_tags = action_str.count(vision_start_tag)
-        
-        target_count = self.config.n_views if self.steps_taken < 6 else 0
-        total_needed = target_count + hallucinated_tags
-        
-        if total_needed == 0:
+
+        if len(images) == 0 and hallucinated_tags == 0:
             return {"obs_str": obs_str}
 
-        processed_images = []
-        # 1. Add dummies for hallucinated tags first (to align with the previous turn's response)
+        processed_images: List[Image.Image] = []
+
+        # 1. Dummy images for hallucinated tags (align with previous response)
         for _ in range(hallucinated_tags):
-            processed_images.append(Image.new("RGB", (224, 224), (0, 0, 0)))
-            
-        # 2. Add the actual new images
-        if self.steps_taken < 6:
-            for i in range(self.config.n_views):
-                if i < len(images):
-                    img = images[i]
-                    if img.size != (224, 224):
-                        img = img.resize((224, 224), Image.Resampling.LANCZOS)
-                    processed_images.append(img)
-                else:
-                    processed_images.append(Image.new("RGB", (224, 224), (0, 0, 0)))
+            processed_images.append(
+                Image.new("RGB", self.config.image_size, (0, 0, 0))
+            )
+
+        # 2. Actual images — resize if necessary
+        for img in images:
+            if img.size != self.config.image_size:
+                img = img.resize(self.config.image_size, Image.Resampling.LANCZOS)
+            processed_images.append(img)
 
         return {
             "obs_str": obs_str,
