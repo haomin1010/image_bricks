@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -217,6 +218,8 @@ def start_server_if_needed(args: argparse.Namespace) -> Tuple[Optional[subproces
         cmd.append("--headless")
     else:
         cmd.append("--no-headless")
+    if args.server_record:
+        cmd.append("--record")
 
     env = os.environ.copy()
     if args.server_cuda_visible_devices:
@@ -485,6 +488,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run auto-started server in headless mode. true/false.",
     )
     parser.add_argument(
+        "--server-record",
+        type=parse_bool,
+        default=False,
+        help="Enable --record for auto-started server and save video under outputs/. true/false.",
+    )
+    parser.add_argument(
         "--server-cuda-visible-devices",
         type=str,
         default="",
@@ -501,6 +510,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="/tmp/isaac_server_test.log",
         help="Log file used when auto-start launches server.",
+    )
+    parser.add_argument(
+        "--server-stop-timeout-s",
+        type=float,
+        default=45.0,
+        help="Graceful stop timeout for auto-started server (SIGINT first, then force kill).",
     )
     return parser
 
@@ -525,12 +540,17 @@ def main() -> int:
         finally:
             if server_proc is not None:
                 if server_proc.poll() is None:
-                    print("[INFO] Stopping auto-started server process.")
-                    server_proc.terminate()
+                    print("[INFO] Stopping auto-started server process (SIGINT for graceful shutdown).")
                     try:
-                        server_proc.wait(timeout=15)
+                        server_proc.send_signal(signal.SIGINT)
+                        server_proc.wait(timeout=args.server_stop_timeout_s)
                     except Exception:
-                        server_proc.kill()
+                        print("[WARN] Graceful shutdown timed out; escalating to SIGTERM.")
+                        server_proc.terminate()
+                        try:
+                            server_proc.wait(timeout=15)
+                        except Exception:
+                            server_proc.kill()
                 print(f"[INFO] Auto-started server log: {os.path.abspath(args.server_log)}")
 
         print("[PASS] Ray grasp test completed successfully.")

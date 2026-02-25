@@ -234,16 +234,17 @@ extract_isaacsim_exe() {
 extract_pip_command() {
     # detect if we're in a uv environment
     if [ -n "${VIRTUAL_ENV}" ] && [ -f "${VIRTUAL_ENV}/pyvenv.cfg" ] && grep -q "uv" "${VIRTUAL_ENV}/pyvenv.cfg"; then
-        pip_command="uv pip install"
+        # uv pip 加代理参数（适配 uv 环境）
+        pip_command="uv pip install --index-url https://pypi.org/simple --proxy http://127.0.0.1:1145 --trusted-host pypi.org --trusted-host files.pythonhosted.org"
     else
         # retrieve the python executable
         python_exe=$(extract_python_exe)
-        pip_command="${python_exe} -m pip install"
+        # 普通 pip 加代理参数（适配常规环境）
+        pip_command="${python_exe} -m pip install --index-url https://pypi.org/simple --proxy http://127.0.0.1:1145 --trusted-host pypi.org --trusted-host files.pythonhosted.org"
     fi
 
     echo ${pip_command}
 }
-
 extract_pip_uninstall_command() {
     # detect if we're in a uv environment
     if [ -n "${VIRTUAL_ENV}" ] && [ -f "${VIRTUAL_ENV}/pyvenv.cfg" ] && grep -q "uv" "${VIRTUAL_ENV}/pyvenv.cfg"; then

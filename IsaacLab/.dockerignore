@@ -1,4 +1,5 @@
-# ignore .git related folders
+
++# ignore .git related folders
 .git/
 .github/
 .gitignore
