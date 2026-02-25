@@ -1,4 +1,5 @@
 from asyncio.log import logger
+from pathlib import Path
 import os
 import torch
 import ray
@@ -19,7 +20,7 @@ import copy
 import isaaclab.utils.math as math_utils
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
-from pxr import Gf, Sdf, UsdPhysics
+from pxr import Gf, Sdf, UsdPhysics, UsdGeom, PhysxSchema
 
 # Isaac Lab and Gym imports will be deferred inside the Actor to ensure 
 # they are only loaded in the process that has the simulation_app.
@@ -74,12 +75,16 @@ class StackingStateMachine:
         # PID state
         self.prev_error = torch.zeros((num_envs, 3), device=device)
         self.error_sum = torch.zeros((num_envs, 3), device=device)
-        self.soft_start_timer = torch.zeros(num_envs, dtype=torch.long, device=device) # 增强：使用计时器而不是布尔值
 
         # Internal buffers for suction synchronization with physics steps
         self._desired_local_pos = torch.zeros((num_envs, 3), device=device)
         self._desired_quat = torch.zeros((num_envs, 4), device=device)
         self.last_sim_step = -1
+        self._suction_attach_mask = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self._suction_detach_mask = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        # Latest observation cache for physics callback suction
+        self._last_obs = None
+        self._cb_error_logged = False
         
         # States
         self.APPROACH_CUBE = 0
@@ -96,103 +101,65 @@ class StackingStateMachine:
     def set_stage(self, stage):
         self._stage = stage
 
-    def _joint_path_for_env(self, env_id: int) -> str:
-        return f"/World/envs/env_{env_id}/SuctionAttachJoint"
+    def set_last_obs(self, obs):
+        self._last_obs = obs
 
-    def _ee_body_path_for_env(self, env_id: int) -> str:
-        return f"/World/envs/env_{env_id}/Robot/ee_link"
+    def physics_suction_cb(self, dt):
+        policy_obs = None
+        policy_obs = self._last_obs.get("policy")
+        self.apply_magic_suction(self._last_obs)
 
-    def _cube_body_path_for_env(self, env_id: int, cube_idx: int) -> str:
-        return f"/World/envs/env_{env_id}/Cube_{cube_idx + 1}"
-
-    def _detach_env_joint(self, env_id: int):
-        if self._stage is None:
-            return
-        joint_path = self._active_joint_paths[env_id] or self._joint_path_for_env(env_id)
-        try:
-            self._stage.RemovePrim(joint_path)
-        except Exception:
-            pass
-        self._active_joint_paths[env_id] = None
-        self.attached_cube_idx[env_id] = -1
-
-    def _attach_env_joint(self, env_id: int, cube_idx: int, ee_pos_w: torch.Tensor, cube_pos_w: torch.Tensor):
-        if self._stage is None:
-            return False
-
-        joint_path = self._joint_path_for_env(env_id)
-        ee_body_path = self._ee_body_path_for_env(env_id)
-        cube_body_path = self._cube_body_path_for_env(env_id, cube_idx)
-
-        ee_prim = self._stage.GetPrimAtPath(ee_body_path)
-        cube_prim = self._stage.GetPrimAtPath(cube_body_path)
-        if not ee_prim.IsValid() or not cube_prim.IsValid():
-            return False
-
-        try:
-            self._stage.RemovePrim(joint_path)
-        except Exception:
-            pass
-
-        joint = UsdPhysics.FixedJoint.Define(self._stage, joint_path)
-        joint_prim = joint.GetPrim()
-        joint_prim.CreateAttribute("physics:jointEnabled", Sdf.ValueTypeNames.Bool, True).Set(True)
-        joint_prim.CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool, True).Set(False)
-        joint_prim.CreateAttribute("physics:excludeFromArticulation", Sdf.ValueTypeNames.Bool, True).Set(True)
-
-        # Keep current relative pose to avoid snap when attaching.
-        local_pos0 = Gf.Vec3f(0.0, 0.0, 0.0)
-        local_pos1 = Gf.Vec3f(
-            float(ee_pos_w[0].item() - cube_pos_w[0].item()),
-            float(ee_pos_w[1].item() - cube_pos_w[1].item()),
-            float(ee_pos_w[2].item() - cube_pos_w[2].item()),
-        )
-        joint_prim.CreateAttribute("physics:localPos0", Sdf.ValueTypeNames.Point3f, True).Set(local_pos0)
-        joint_prim.CreateAttribute("physics:localPos1", Sdf.ValueTypeNames.Point3f, True).Set(local_pos1)
-        joint_prim.CreateAttribute("physics:localRot0", Sdf.ValueTypeNames.Quatf, True).Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        joint_prim.CreateAttribute("physics:localRot1", Sdf.ValueTypeNames.Quatf, True).Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        joint.CreateBody0Rel().SetTargets([Sdf.Path(ee_body_path)])
-        joint.CreateBody1Rel().SetTargets([Sdf.Path(cube_body_path)])
-
-        self._active_joint_paths[env_id] = joint_path
-        self.attached_cube_idx[env_id] = cube_idx
-        return True
 
     def apply_magic_suction(self, obs):
-        # GPU-native suction: emulate attachment by dynamically creating/removing fixed joints.
-        if self._stage is None:
-            return
-
         env_origins = self.scene.env_origins
-        ee_pos_local = obs["policy"]["eef_pos"]
-        ee_pos_w = ee_pos_local + env_origins
+        policy_obs = obs.get("policy", {})
+        ee_pos = policy_obs.get("eef_pos")
+        ee_quat = policy_obs.get("eef_quat")
 
-        for env_id in range(self.num_envs):
-            state_i = int(self.state[env_id].item())
+        # 1) Attach condition: same logic as stack_cube_sm.py (local-space distance)
+        grabbing_mask = (self.state == self.GRASP) & (self.attached_cube_idx == -1)
+        grabbing_env_ids = torch.where(grabbing_mask)[0]
+        if grabbing_env_ids.numel() > 0:
+            for cube_idx in range(len(self.cube_names)):
+                checking_mask = (self.task_index[grabbing_env_ids] == cube_idx)
+                if not checking_mask.any():
+                    continue
+                target_ids = grabbing_env_ids[checking_mask]
+                cube_asset = self.scene[self.cube_names[cube_idx]]
+                cube_pos_w = cube_asset.data.root_pos_w[target_ids]
+                cube_pos_local = cube_pos_w - env_origins[target_ids]
+                dists = torch.norm(ee_pos[target_ids] - cube_pos_local, dim=-1)
+                can_attach = dists < 0.05
+                if can_attach.any():
+                    self.attached_cube_idx[target_ids[can_attach]] = cube_idx
 
-            # Release on explicit opening/idle states.
-            if state_i in [self.RELEASE, self.RETRACT, -1, self.IDLE]:
-                if int(self.attached_cube_idx[env_id].item()) >= 0:
-                    self._detach_env_joint(env_id)
+        # 2) Detach condition: release only
+        releasing_mask = (self.state == self.RELEASE)
+        if releasing_mask.any():
+            self.attached_cube_idx[releasing_mask] = -1
+
+        # 3) Sync attached cube pose
+        for cube_idx in range(len(self.cube_names)):
+            attached_mask = (self.attached_cube_idx == cube_idx)
+            env_ids = torch.where(attached_mask)[0]
+            if env_ids.numel() == 0:
                 continue
-
-            # Attach around descend/grasp/transport phases.
-            if state_i not in [self.DESCEND_CUBE, self.GRASP, self.LIFT, self.APPROACH_TARGET, self.DESCEND_TARGET]:
-                continue
-            if int(self.attached_cube_idx[env_id].item()) >= 0:
-                continue
-
-            cube_idx = int(self.task_index[env_id].item())
-            if cube_idx < 0 or cube_idx >= len(self.cube_names):
-                continue
-
-            cube_name = self.cube_names[cube_idx]
-            cube_pos_w = self.scene[cube_name].data.root_pos_w[env_id]
-            dist = torch.norm(ee_pos_w[env_id] - cube_pos_w).item()
-            if dist > 0.03:
-                continue
-
-            self._attach_env_joint(env_id, cube_idx, ee_pos_w[env_id], cube_pos_w)
+            cube_asset = self.scene[self.cube_names[cube_idx]]
+            target_cube_pos_local = ee_pos[env_ids].clone()
+            target_cube_pos_local[:, 2] -= self.cube_z_size / 4.0
+            target_cube_pos_w = target_cube_pos_local + env_origins[env_ids]
+            if ee_quat is None:
+                quat = cube_asset.data.root_quat_w[env_ids]
+            else:
+                quat = ee_quat[env_ids]
+            root_poses = torch.cat([target_cube_pos_w, quat], dim=-1)
+            env_ids_int32 = env_ids.to(dtype=torch.int32)
+            cube_asset.write_root_pose_to_sim(root_poses, env_ids=env_ids_int32)
+            cube_asset.write_root_velocity_to_sim(
+                torch.zeros((env_ids.numel(), 6), device=self.device),
+                env_ids=env_ids_int32,
+            )
+        return
 
     def set_env_targets(self, env_ids, targets):
         """Update targets for specific environments. targets: list of (x,y,z) tuples"""
@@ -220,15 +187,12 @@ class StackingStateMachine:
 
     def reset_envs(self, env_ids):
         env_ids_list = env_ids.tolist() if isinstance(env_ids, torch.Tensor) else list(env_ids)
-        for env_id in env_ids_list:
-            self._detach_env_joint(int(env_id))
         self.state[env_ids] = self.IDLE
         self.wait_timer[env_ids] = 0
         self.task_index[env_ids] = 0
         self.state_timer[env_ids] = 0
         self.prev_error[env_ids] = 0
         self.error_sum[env_ids] = 0
-        self.soft_start_timer[env_ids] = 0 # 重置后开启 100 步的软启动（约 1-2 秒）
         self.attached_cube_idx[env_ids] = -1 # 重置吸附状态
         # clear server-driven flags
         self.has_pending_targets[env_ids] = False
@@ -308,7 +272,7 @@ class StackingStateMachine:
                     yaw_diff = torch.min(yaw_diff, 2 * 3.14159 - yaw_diff)
                     
                     # 严谨化：只有当位置到位、旋转对齐，且在该状态稳定停留一小段时间后才下降
-                    if torch.norm(ee_pos[i] - target_pos) < 0.01 and yaw_diff < 0.03 and self.state_timer[i] > 2: 
+                    if torch.norm(ee_pos[i] - target_pos) < 0.01 and yaw_diff < 0.03: 
                         self.state[i] = self.DESCEND_CUBE
                         self.state_timer[i] = 0
                         # 锁定此时的 Yaw，防止后续搬运过程中因为方块旋转导致机械臂乱扭
@@ -321,15 +285,14 @@ class StackingStateMachine:
                     gripper_cmd = 1.0 
                     if torch.abs(ee_pos[i, 2] - target_pos[2]) < 0.01: 
                         self.state[i] = self.GRASP
-                        self.wait_timer[i] = 5
                         self.state_timer[i] = 0
                         
                 elif self.state[i] == self.GRASP:
                     target_pos = current_source_pos.clone()
                     target_pos[2] = cube_z_size - 0.002
                     gripper_cmd = -1.0 
-                    self.wait_timer[i] -= 1
-                    if self.wait_timer[i] <= 0:
+                    # 只在成功吸附后切换到 LIFT
+                    if int(self.attached_cube_idx[i].item()) == int(self.task_index[i].item()):
                         self.state[i] = self.LIFT
                         self.state_timer[i] = 0
                         
@@ -344,10 +307,8 @@ class StackingStateMachine:
                 elif self.state[i] == self.APPROACH_TARGET:
                     target_pos = target_local.clone()
                     target_pos[2] = safe_z
-                    gripper_cmd = -1.0 
-                    # 修复：显著放宽到达判定的距离 (0.02 -> 0.05)，防止机器人在目标点上方因为 IK 精度卡死
-                    # 因为 DESCEND_TARGET 阶段仍然会进行 XY 轴的实时纠偏，所以 5cm 的容差是安全的
-                    if torch.norm(ee_pos[i, :2] - target_pos[:2]) < 0.05:
+                    gripper_cmd = -1.0
+                    if torch.norm(ee_pos[i, :2] - target_pos[:2]) < 0.01:
                         self.state[i] = self.DESCEND_TARGET
                         self.state_timer[i] = 0
                         
@@ -403,15 +364,14 @@ class StackingStateMachine:
             # 调整控制增益与速度限制，使动作更轻柔并保持精度
             kp = 0.45
 
-            # 更保守的速度限制（单位 m/s）——优先精度与平滑性
             if self.state[i] in [self.DESCEND_CUBE, self.DESCEND_TARGET]:
-                current_max_vel = 0.02 # 2cm/s
+                current_max_vel = 0.05 # 5cm/s
             elif self.state[i] in [self.GRASP, self.RELEASE]:
                 current_max_vel = 0.003 # 0.3cm/s for fine adjustments
             elif self.state[i] in [self.LIFT, self.RETRACT]:
-                current_max_vel = 0.035 # 3.5cm/s
+                current_max_vel = 0.08 # 8cm/s
             else:
-                current_max_vel = 0.06 # 6cm/s (Approach stage)
+                current_max_vel = 0.1 # 10cm/s (Approach stage)
             
             diff_pos = target_pos - ee_pos[i]
             pos_action = diff_pos * kp
@@ -445,17 +405,7 @@ class StackingStateMachine:
                 target_yaw
             ).to(self.device).squeeze(0)
 
-            # --- 核心修复：平滑启动计时器 (Soft Start Timer) ---
-            # 如果处于软启动期，严厉限制速度和旋转，防止启动时的 Whipping 效应
-            if self.soft_start_timer[i] > 0:
-                # 在软启动期进一步限制旋转速度
-                current_rot_max_vel = 0.002 
-                # 同时也极其严格地限制位置移动
-                if pos_norm > 0.001:
-                    pos_action = pos_action * (0.001 / pos_norm)
-                self.soft_start_timer[i] -= 1
-            else:
-                current_rot_max_vel = 0.02 # 限制旋转速度，防止旋转过猛造成的“甩动"
+            current_rot_max_vel = 0.1 # 限制旋转速度，防止旋转过猛造成的“甩动"
             
             actions[i, :3] = pos_action
             
@@ -534,7 +484,30 @@ def get_stack_cube_env_cfg(task_name, device, num_envs, enable_cameras):
     # Spawning Logic: We spawn a fixed number of cubes to handle various tasks
     max_cubes = 8
     cube_size = 0.045 # Exact cube size as requested by user
-    blue_usd = f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/blue_block.usd"
+    repo_root = Path(__file__).resolve().parents[3]
+    isaac_assets = repo_root / "assets" / "Isaac"
+    blue_usd_candidate = isaac_assets / "Props" / "Blocks" / "blue_block.usd"
+    if blue_usd_candidate.exists():
+        blue_usd = str(blue_usd_candidate)
+        print(f"[INFO]: Using local asset at {blue_usd}")
+    else:
+        blue_usd = f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/blue_block.usd"
+        print(f"[WARN]: Local asset not found, falling back to {blue_usd}")
+    robot_usd_candidate = isaac_assets / "Robots" / "UniversalRobots" / "ur10" / "ur10.usd"
+    if robot_usd_candidate.exists() and hasattr(env_cfg.scene, "robot") and env_cfg.scene.robot is not None:
+        if hasattr(env_cfg.scene.robot.spawn, "usd_path"):
+            env_cfg.scene.robot.spawn.usd_path = str(robot_usd_candidate)
+            print(f"[INFO]: Using local robot asset at {robot_usd_candidate}")
+    table_usd_candidate = isaac_assets / "Props" / "Mounts" / "SeattleLabTable" / "table_instanceable.usd"
+    if table_usd_candidate.exists() and hasattr(env_cfg.scene, "table"):
+        if hasattr(env_cfg.scene.table.spawn, "usd_path"):
+            env_cfg.scene.table.spawn.usd_path = str(table_usd_candidate)
+            print(f"[INFO]: Using local table asset at {table_usd_candidate}")
+    ground_usd_candidate = isaac_assets / "Environments" / "Grid" / "default_environment.usd"
+    if ground_usd_candidate.exists() and hasattr(env_cfg.scene, "plane"):
+        if hasattr(env_cfg.scene.plane.spawn, "usd_path"):
+            env_cfg.scene.plane.spawn.usd_path = str(ground_usd_candidate)
+            print(f"[INFO]: Using local ground asset at {ground_usd_candidate}")
     cube_names = [f"cube_{i+1}" for i in range(max_cubes)]
     
     # 核心回归：取料位置恢复到 [0.3, -0.2]

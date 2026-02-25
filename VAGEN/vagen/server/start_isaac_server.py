@@ -326,6 +326,11 @@ def main():
         cell_size=cell_size,
     )
     sm.set_stage(env.unwrapped.sim.stage)
+    # Register suction update on every physics substep
+    try:
+        env.unwrapped.sim.add_physics_callback("suction_step", sm.physics_suction_cb)
+    except Exception as e:
+        print(f"[WARN] Failed to add physics callback for suction: {e}")
     print("State machine initialized")
     
     step_initial_task_idx = {}  # env_id -> (initial task index, is_submit) for step completion check
@@ -655,7 +660,13 @@ def main():
                 sm.new_task_available[env_id] = False
                 sm.new_task_index[env_id] = -1
             obs, _, _, _, _ = env.step(actions)
-            sm.apply_magic_suction(obs)
+            sm.set_last_obs(obs)
+            # Debug: verify physics callback is ticking
+            if step_count % 200 == 0:
+                try:
+                    print(f"[SuctionCB] counter={sm._cb_counter}")
+                except Exception:
+                    pass
 
     except KeyboardInterrupt:
         shutdown_reason = "keyboard interrupt"
