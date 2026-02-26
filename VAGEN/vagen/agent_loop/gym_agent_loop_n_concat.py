@@ -225,6 +225,7 @@ class GymAgentLoop(AgentLoopBase):
             o = outputs[0]
             # #region agent log
             _dbg("H2,H3,H4", "gym_agent_loop_n_concat:return_single", "final output to verl", {
+                "mode": "n_concat",
                 "prompt_ids_len": len(o.prompt_ids),
                 "response_ids_len": len(o.response_ids),
                 "response_mask_len": len(o.response_mask),
@@ -282,6 +283,7 @@ class GymAgentLoop(AgentLoopBase):
         )
         # #region agent log
         _dbg("H2,H3,H4", "gym_agent_loop_n_concat:return_merged", "merged output to verl", {
+            "mode": "n_concat",
             "prompt_ids_len": len(out.prompt_ids),
             "response_ids_len": len(out.response_ids),
             "response_mask_len": len(out.response_mask),
