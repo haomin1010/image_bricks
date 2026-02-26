@@ -1,0 +1,16 @@
+envs:
+  - name: BrickIsaac              # registered env name in env_registry.yaml
+    n_envs: 5000                  # number of parallel environment instances
+    data_source: brick_isaac_full_view      # nickname for logging (wandb, console)
+    seed: [1, 5000, 1]           # sample seeds from 1..5000, each seed used at most 1 time
+    max_turns: 10                 # max interaction turns per episode (brick placements)
+    response_length_per_turn: 256 # max response tokens per turn (JSON coord is short)
+    config:                       # env-specific config → BrickIsaacEnvConfig
+      backend: isaac              # "mock" for testing, "isaac" for real simulator
+      n_views: 3                  # number of camera views (top/front/side)
+      image_size: [256, 256]
+      grid_size: 8                # mock grid dimension
+      max_steps: 200              # hard step limit inside env
+      format_reward: 0.1
+      success_reward: 1.0
+      num_total_envs: 64
