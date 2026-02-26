@@ -1,0 +1,598 @@
+# All comments are in English.
+from __future__ import annotations
+
+import argparse
+import asyncio
+import copy
+import json
+import logging
+import os
+
+# --- Proxy Fix: Ensure local addresses bypass proxy for local SGLang
+# Avoid removing global proxy envs (they're needed for remote downloads).
+# Instead, ensure NO_PROXY contains localhost so local connections won't use the proxy.
+existing_no_proxy = os.environ.get("NO_PROXY")
+if existing_no_proxy:
+    if "localhost" not in existing_no_proxy and "127.0.0.1" not in existing_no_proxy:
+        os.environ["NO_PROXY"] = existing_no_proxy + ",localhost,127.0.0.1"
+else:
+    os.environ["NO_PROXY"] = "localhost,127.0.0.1"
+
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from omegaconf import DictConfig, OmegaConf
+
+from vagen.evaluate.register_builtins import *  # populate registry
+from vagen.envs.registry import get_env_cls
+from vagen.evaluate.runner import run_eval_parallel, NORMAL_FINISH_REASONS
+from vagen.evaluate.utils.seeding_utils import generate_seeds_for_spec
+from vagen.evaluate.utils.summary_utils import write_rollouts_summary_from_dump
+DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "conf", "evaluate.yaml")
+
+
+logger = logging.getLogger("view_suite.run_eval")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
+
+
+@dataclass
+class EnvSpec:
+    """Configuration for one logical environment family."""
+
+    name: str
+    n_envs: int
+    split: str
+    tag_id: Union[int, str] = 0
+    config: Dict[str, Any] = field(default_factory=dict)
+    chat_config: Dict[str, Any] = field(default_factory=dict)
+    seed: List[int] = field(default_factory=lambda: [0])
+    seed_list: Optional[List[int]] = None
+    max_turns: Optional[int] = None
+
+
+def _looks_like_path_key(key: str) -> bool:
+    low = key.lower()
+    return low.endswith("_path") or low.endswith("_dir") or ("path" in low) or ("dir" in low)
+
+
+def _resolve_paths_in_config(obj: Any, base_dir: str) -> Any:
+    """Recursively resolve fields that look like paths relative to the config file."""
+    if isinstance(obj, dict):
+        out: Dict[str, Any] = {}
+        for k, v in obj.items():
+            out[k] = _resolve_paths_in_config(v, base_dir)
+            val = out[k]
+            if isinstance(val, str) and _looks_like_path_key(k):
+                if val and not os.path.isabs(val):
+                    if not val.startswith(("http://", "https://", "ws://", "wss://")):
+                        expanded = os.path.expandvars(val)
+                        out[k] = os.path.abspath(os.path.join(base_dir, expanded))
+        return out
+    if isinstance(obj, list):
+        return [_resolve_paths_in_config(x, base_dir) for x in obj]
+    return obj
+
+
+def _parse_env_specs(cfg: Dict[str, Any]) -> List[EnvSpec]:
+    envs_cfg = cfg.get("envs")
+    if not envs_cfg:
+        raise ValueError("No envs specified. Provide env definitions under 'envs:'.")
+
+    specs: List[EnvSpec] = []
+    for item in envs_cfg:
+        if not isinstance(item, dict):
+            raise TypeError("Each env spec must be a mapping")
+        if "tag_id" not in item or item.get("tag_id") is None:
+            raise ValueError(f"Env spec '{item.get('name')}' is missing 'tag_id'. Provide a tag_id (int or str).")
+
+        tag_id_val = item.get("tag_id")
+        # Keep tag_id as-is (int or str), but convert to str if it's something else
+        if not isinstance(tag_id_val, (int, str)):
+            tag_id_val = str(tag_id_val)
+
+        spec = EnvSpec(
+            name=str(item["name"]),
+            n_envs=int(item["n_envs"]),
+            split=str(item.get("split", "default")),
+            tag_id=tag_id_val,
+            config=item.get("config") or {},
+            chat_config=item.get("chat_config") or {},
+            seed=item.get("seed") if "seed" in item else [0],
+            seed_list=item.get("seed_list"),
+            max_turns=item.get("max_turns"),
+        )
+        specs.append(spec)
+    return specs
+
+
+def _resolve_dump_dir(cfg: Dict[str, Any], base_dir: str) -> str:
+    exp_cfg = cfg.get("experiment") or {}
+    dump_dir = exp_cfg.get("dump_dir", "./rollouts")
+    if not isinstance(dump_dir, str):
+        raise TypeError("experiment.dump_dir must be a string path")
+    dump_dir = os.path.expandvars(dump_dir)
+    if not os.path.isabs(dump_dir):
+        dump_dir = os.path.abspath(os.path.join(base_dir, dump_dir))
+    return dump_dir
+
+
+def _purge_error_rollouts(dump_dir: Optional[str], resume_mode: str) -> None:
+    """
+    Remove previous error rollouts so reruns start clean.
+    Only invoked when resume mode keeps completed runs.
+    """
+    if resume_mode == "off" or not dump_dir:
+        return
+    if not os.path.isdir(dump_dir):
+        return
+
+    success_reasons = set(NORMAL_FINISH_REASONS)
+    for tag_entry in os.scandir(dump_dir):
+        if not tag_entry.is_dir() or not tag_entry.name.startswith("tag_"):
+            continue
+        for rollout_entry in os.scandir(tag_entry.path):
+            if not rollout_entry.is_dir():
+                continue
+            metrics_path = os.path.join(rollout_entry.path, "metrics.json")
+            if not os.path.isfile(metrics_path):
+                try:
+                    shutil.rmtree(rollout_entry.path, ignore_errors=False)
+                    logger.info("Removed rollout without metrics: %s", rollout_entry.path)
+                except Exception:
+                    logger.warning("Failed to remove rollout without metrics: %s", rollout_entry.path)
+                continue
+            try:
+                with open(metrics_path, "r", encoding="utf-8") as f:
+                    metrics = json.load(f)
+            except Exception:
+                continue
+
+            finish_reason = metrics.get("finish_reason")
+            if not finish_reason:
+                terminated = bool(metrics.get("terminated"))
+                success = bool(metrics.get("success"))
+                if terminated and success:
+                    finish_reason = "done"
+
+            if finish_reason in success_reasons:
+                continue
+
+            try:
+                shutil.rmtree(rollout_entry.path, ignore_errors=False)
+                logger.info("Removed previous error rollout folder: %s", rollout_entry.path)
+            except Exception:
+                logger.warning("Failed to remove error rollout folder: %s", rollout_entry.path)
+
+
+def _refresh_tag_summaries(dump_dir: Optional[str]) -> None:
+    if not dump_dir or not os.path.isdir(dump_dir):
+        return
+    for tag_entry in os.scandir(dump_dir):
+        if not tag_entry.is_dir() or not tag_entry.name.startswith("tag_"):
+            continue
+        try:
+            outp = write_rollouts_summary_from_dump(dump_dir=tag_entry.path, filename="summary.json")
+            logger.info("Resume: refreshed summary %s", outp)
+        except Exception as exc:
+            logger.warning("Resume: failed to refresh summary for %s: %s", tag_entry.path, exc)
+
+
+def _collect_completed_runs(dump_dir: Optional[str]) -> Dict[Tuple[str, int, Union[int, str]], str]:
+    """
+    Scan existing rollouts to find completed (success) runs keyed by (env_name, seed, tag_id).
+    """
+    completed: Dict[Tuple[str, int, Union[int, str]], str] = {}
+    if not dump_dir or not os.path.isdir(dump_dir):
+        return completed
+
+    for tag_entry in os.scandir(dump_dir):
+        if not tag_entry.is_dir() or not tag_entry.name.startswith("tag_"):
+            continue
+        for rollout_entry in os.scandir(tag_entry.path):
+            if not rollout_entry.is_dir():
+                continue
+            metrics_path = os.path.join(rollout_entry.path, "metrics.json")
+            if not os.path.isfile(metrics_path):
+                continue
+            try:
+                with open(metrics_path, "r", encoding="utf-8") as f:
+                    metrics = json.load(f)
+            except Exception:
+                continue
+
+            finish_reason = metrics.get("finish_reason")
+            if not finish_reason:
+                terminated = bool(metrics.get("terminated"))
+                success = bool(metrics.get("success"))
+                if terminated and success:
+                    finish_reason = "done"
+
+            if finish_reason not in NORMAL_FINISH_REASONS:
+                continue
+
+            meta_path = os.path.join(rollout_entry.path, "meta.json")
+            meta_payload: Optional[Dict[str, Any]] = None
+            if os.path.isfile(meta_path):
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        meta_payload = json.load(f)
+                except Exception:
+                    meta_payload = None
+
+            env_name = (meta_payload or {}).get("env_name") or metrics.get("env_name")
+            seed = (meta_payload or {}).get("seed") or metrics.get("seed")
+            tag_id = (meta_payload or {}).get("tag_id") or metrics.get("tag_id")
+            if env_name is None or seed is None or tag_id is None:
+                continue
+            try:
+                # Keep tag_id as original type (int or str)
+                if not isinstance(tag_id, (int, str)):
+                    tag_id = str(tag_id)
+                key = (str(env_name), int(seed), tag_id)
+            except (TypeError, ValueError):
+                continue
+            completed[key] = "done"
+    return completed
+
+
+def _job_resume_key(data: Dict[str, Any]) -> Optional[Tuple[str, int, Union[int, str]]]:
+    env_name = data.get("env_name")
+    seed = data.get("seed")
+    tag_id = data.get("tag_id")
+    if env_name is None or seed is None or tag_id is None:
+        return None
+    try:
+        # Keep tag_id as original type (int or str)
+        if not isinstance(tag_id, (int, str)):
+            tag_id = str(tag_id)
+        return (str(env_name), int(seed), tag_id)
+    except (TypeError, ValueError):
+        return None
+
+
+
+
+def _expand_jobs(
+    env_specs: List[EnvSpec],
+    base_seed: int,
+    base_dir: str,
+    default_max_turns: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    jobs: List[Dict[str, Any]] = []
+    for spec_idx, spec in enumerate(env_specs):
+        env_cls = get_env_cls(spec.name)
+        resolved_config = _resolve_paths_in_config(copy.deepcopy(spec.config), base_dir)
+        seeds = generate_seeds_for_spec(spec, base_seed, spec_idx)
+        job_max_turns = int(spec.max_turns if spec.max_turns is not None else default_max_turns or 10)
+        env_chat_cfg = spec.chat_config or {}
+
+        for i in range(spec.n_envs):
+            seed = seeds[i]
+            job_config = copy.deepcopy(resolved_config)
+            chat_cfg = copy.deepcopy(env_chat_cfg)
+            job_data = {
+                "env_cls": env_cls,
+                "env_config": job_config,
+                "seed": int(seed),
+                "tag_id": spec.tag_id,  # Keep original type (int or str)
+                "split": spec.split,
+                "env_name": spec.name,
+                "max_turns": job_max_turns,
+                "chat_config": chat_cfg,
+            }
+            jobs.append({"data": job_data})
+    return jobs
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Evaluate ViewSuite agents across multiple env specs.")
+    parser.add_argument("--config", type=str, default=None, help="Path to evaluation YAML config.")
+    parser.add_argument(
+        "overrides",
+        nargs="*",
+        help="Optional OmegaConf dotlist overrides, e.g. run.backend=sglang run.max_concurrent_jobs=8",
+    )
+    return parser.parse_args()
+
+
+def _load_config(cfg_path: str, overrides: List[str]) -> DictConfig:
+    cfg: DictConfig = OmegaConf.load(cfg_path)  # type: ignore
+    if overrides:
+        override_cfg = OmegaConf.from_dotlist(overrides)
+        cfg = OmegaConf.merge(cfg, override_cfg)
+    return cfg
+
+
+def main() -> None:
+    # --- Ray and Isaac Server Initialization (Mirroring main_ppo.py logic) ---
+    import ray
+    if not ray.is_initialized():
+        # Use fixed namespace for actor discovery
+        ray.init(namespace="vagen_training", ignore_reinit_error=True)
+
+    args = _parse_args()
+    cfg_path = args.config or DEFAULT_CONFIG_PATH
+    cfg_path = os.path.abspath(cfg_path)
+    if not os.path.exists(cfg_path):
+        raise FileNotFoundError(f"Config file not found: {cfg_path}")
+
+    cfg_node = _load_config(cfg_path, args.overrides)
+    print("=== Effective Config ===")
+    print(OmegaConf.to_yaml(cfg_node, resolve=True))
+
+    cfg: Dict[str, Any] = OmegaConf.to_container(cfg_node, resolve=True)  # type: ignore
+    base_dir = os.path.dirname(cfg_path)
+
+    # Auto-start IsaacEnvServer ONLY if needed (check config)
+    need_isaac_server = False
+    env_specs = _parse_env_specs(cfg)
+    for spec in env_specs:
+        if spec.name == "BrickIsaac" and spec.config.get("backend") == "isaac":
+            need_isaac_server = True
+            break
+    
+    isaac_server_process = None
+    if need_isaac_server:
+        print(">>> Isaac backend detected. Starting IsaacEnvServer...")
+        try:
+            ray.get_actor("IsaacEnvServer")
+            print(">>> Found existing IsaacEnvServer.")
+        except ValueError:
+            print(">>> IsaacEnvServer NOT found. Starting in separate process (main thread required)...")
+            try:
+                # Start Isaac server in dedicated process
+                server_script = os.path.join(os.path.dirname(__file__), "..", "server", "start_isaac_server.py")
+                server_script = os.path.abspath(server_script)
+                cmd = [
+                    sys.executable,
+                    server_script,
+                    "--num-envs", "1",
+                    # TODO:
+                    "--device", "cuda:0",
+                    "--task", "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
+                    "--headless"
+                ]
+
+                env = os.environ.copy()
+                # Server will auto-connect to the same Ray cluster
+                # Run Isaac on GPU7 (exclusive for Isaac, as GPU0 is full)
+                env["CUDA_VISIBLE_DEVICES"] = "7"
+                
+                print(f">>> Starting Isaac server in foreground (logs will print here): {' '.join(cmd)}")
+                # Start Isaac server as a child process that inherits stdout/stderr
+                # so its logs appear in this main process's terminal for easier debugging.
+                isaac_server_process = subprocess.Popen(
+                    cmd,
+                    env=env,
+                    text=True
+                )
+                
+                # Wait for server to register (poll for actor)
+                print(">>> Waiting for IsaacEnvServer to register (max 120s)...")
+                # TODO:
+                for i in range(120):
+                    try:
+                        ray.get_actor("IsaacEnvServer")
+                        print(f">>> IsaacEnvServer registered successfully after {i+1}s")
+                        break
+                    except ValueError:
+                        time.sleep(1)
+                else:
+                    print(">>> Timeout waiting for Isaac server.")
+            except Exception as e:
+                print(f">>> Failed to start Isaac server: {e}")
+
+    run_cfg = cfg.get("run") or {}
+    backend = str(run_cfg.get("backend", "openai")).lower()    
+    # --- SGLang Auto-start Logic ---
+    sglang_server_process = None
+    if backend == "sglang":
+        backend_cfg: Dict[str, Any] = OmegaConf.to_container(cfg_node.backends[backend], resolve=True)  # type: ignore
+        base_url = backend_cfg.get("base_url", "")
+        if "127.0.0.1" in base_url or "localhost" in base_url:
+            port = base_url.split(":")[-1].split("/")[0]
+            # Check if port is already in use
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if s.connect_ex(('127.0.0.1', int(port))) != 0:
+                    print(f">>> SGLang server not detected on port {port}. Starting it...")
+                    model_path = backend_cfg.get("model", "Qwen/Qwen2.5-VL-3B-Instruct")
+                    # Use GPUs 0,1,2,3 for SGLang. GPU 1 will be shared with Isaac (as requested).
+                    env = os.environ.copy()
+                    env["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+
+                    # Determine requested tp from backend_cfg if present, otherwise use number of GPUs.
+                    try:
+                        requested_tp = int(backend_cfg.get("tp", 0) or 0)
+                    except Exception:
+                        requested_tp = 0
+                    gpu_list = [g.strip() for g in env.get("CUDA_VISIBLE_DEVICES", "").split(",") if g.strip()]
+                    num_gpus = len(gpu_list) if gpu_list else 1
+                    # Default to using all available GPUs for tp if not explicitly configured
+                    if requested_tp <= 0:
+                        requested_tp = num_gpus
+
+                    # Qwen-like models require num_attention_heads to be divisible by tp.
+                    # Common head counts are 16; pick the largest divisor of 16 <= requested_tp.
+                    possible_divisors = [16, 8, 4, 2, 1]
+                    tp_to_use = 1
+                    for d in possible_divisors:
+                        if d <= requested_tp:
+                            tp_to_use = d
+                            break
+
+                    # Ensure we don't request more tensor partitions than GPUs available
+                    if tp_to_use > num_gpus:
+                        for d in possible_divisors:
+                            if d <= num_gpus:
+                                tp_to_use = d
+                                break
+
+                    if tp_to_use != requested_tp:
+                        print(f">>> Adjusting requested tp={requested_tp} -> tp={tp_to_use} to satisfy model partitioning and available GPU constraints")
+
+                    cmd = [
+                        sys.executable, "-m", "sglang.launch_server",
+                        "--model-path", model_path,
+                        "--port", str(port),
+                        "--tp", str(tp_to_use),
+                        "--mem-fraction-static", "0.2"
+                    ]
+                    
+                    sglang_log_file = open("/tmp/sglang_server.log", "a")
+                    sglang_server_process = subprocess.Popen(
+                        cmd,
+                        env=env,
+                        stdout=sglang_log_file,
+                        stderr=subprocess.STDOUT,
+                        text=True
+                    )
+                    
+                    print(f">>> Waiting for SGLang server to go online (max 300s)...")
+                    import http.client
+                    online = False
+                    for i in range(300):
+                        try:
+                            conn = http.client.HTTPConnection("127.0.0.1", int(port))
+                            conn.request("GET", "/v1/models")
+                            resp = conn.getresponse()
+                            if resp.status == 200:
+                                print(f">>> SGLang server is online after {i+1}s")
+                                online = True
+                                break
+                        except:
+                            pass
+                        time.sleep(1)
+                    if not online:
+                        print(">>> Timeout waiting for SGLang server. Check /tmp/sglang_server.log")
+                else:
+                    print(f">>> Found existing process on port {port}, assuming it's SGLang.")
+    resume_mode = str(run_cfg.get("resume", "skip_completed"))
+    live_summary = bool(run_cfg.get("live_summary", False))
+    max_concurrent = int(run_cfg.get("max_concurrent_jobs", 4))
+    base_seed = int(run_cfg.get("base_seed", run_cfg.get("start_seed", 0)))
+
+    backend_cfg: Dict[str, Any] = OmegaConf.to_container(cfg_node.backends[backend], resolve=True)  # type: ignore
+    model = backend_cfg.get("model") or backend_cfg.get("deployment")
+    if not model:
+        raise ValueError(f"[{backend}] requires 'model' (or 'deployment' for Azure) in backends.{backend}.*")
+
+    env_specs = _parse_env_specs(cfg)
+    default_max_turns = (cfg.get("experiment") or {}).get("default_max_turns")
+    jobs = _expand_jobs(env_specs, base_seed, base_dir, default_max_turns)
+    print(f"Prepared {len(jobs)} jobs from {len(env_specs)} environment specs.")
+
+    dump_dir = _resolve_dump_dir(cfg, base_dir)
+    if resume_mode != "off":
+        logger.info("Resume mode=%s; pruning error rollouts under %s", resume_mode, dump_dir)
+        _purge_error_rollouts(dump_dir, resume_mode)
+        _refresh_tag_summaries(dump_dir)
+
+    completed_index: Dict[Tuple[str, int, int], str] = {}
+    if resume_mode == "skip_completed":
+        completed_index = _collect_completed_runs(dump_dir)
+        logger.info("Resume: detected %d completed rollouts to skip", len(completed_index))
+
+    if completed_index:
+        pending_jobs = []
+        skipped = 0
+        for job in jobs:
+            key = _job_resume_key(job["data"])
+            if key and completed_index.get(key) == "done":
+                skipped += 1
+                data = job["data"]
+                logger.info(
+                    "Skipping completed rollout env=%s tag=%s seed=%s",
+                    data.get("env_name"),
+                    data.get("tag_id"),
+                    data.get("seed"),
+                )
+                continue
+            pending_jobs.append(job)
+        if skipped:
+            logger.info("Resume: skipped %d/%d jobs", skipped, len(jobs))
+        jobs = pending_jobs
+    logger.info("Total pending jobs: %d", len(jobs))
+
+    results = asyncio.run(
+        run_eval_parallel(
+            jobs,
+            backend=backend,
+            backend_cfg=backend_cfg,
+            model=model,
+            default_max_turns=default_max_turns,
+            dump_dir=dump_dir,
+            max_concurrent_jobs=max_concurrent,
+            resume_mode=resume_mode,
+            live_summary=live_summary,
+        )
+    )
+
+    error_records_by_tag: Dict[Union[int, str], List[Dict[str, Any]]] = {}
+    tag_ids_seen: set[Union[int, str]] = set()
+    for r in results:
+        rid = r.get("rollout_id")
+        finish_reason = r.get("finish_reason") or r.get("skipped") or ""
+        tag_id_val = r.get("tag_id")
+        tag_info = ""
+        if tag_id_val is not None:
+            tag_info = f"(tag={tag_id_val})"
+            tag_ids_seen.add(tag_id_val)
+        error_msg = r.get("error")
+        if error_msg:
+            print(f"{rid} ERROR: {error_msg} {tag_info}")
+            detail: Dict[str, Any] = {"rollout_id": rid, "error": error_msg}
+            for key in ("tag_id", "env_name", "split", "seed"):
+                if key in r and r.get(key) is not None:
+                    detail[key] = r.get(key)
+            if tag_id_val is not None:
+                error_records_by_tag.setdefault(tag_id_val, []).append(detail)
+        else:
+            print(rid, finish_reason, tag_info)
+
+    from vagen.evaluate.utils.summary_utils import write_rollouts_summary_from_dump
+
+    # Sort tag_ids with str(x) as key to handle both int and str
+    for tag_id in sorted(tag_ids_seen, key=str):
+        tag_dir = os.path.join(dump_dir, f"tag_{tag_id}") if dump_dir else None
+        if not tag_dir:
+            continue
+        outp = write_rollouts_summary_from_dump(dump_dir=tag_dir, filename="summary.json")
+        tag_errors = error_records_by_tag.get(tag_id)
+        if tag_errors:
+            try:
+                with open(outp, "r", encoding="utf-8") as f:
+                    summary_payload = json.load(f)
+            except Exception:
+                summary_payload = {"created_at": None}
+            summary_payload["error_details"] = tag_errors
+            with open(outp, "w", encoding="utf-8") as f:
+                json.dump(summary_payload, f, ensure_ascii=False, indent=2)
+            print(f"[Error details appended] {outp}")
+        print(f"[Summary written] {outp}")
+
+    # Cleanup auto-started processes
+    if isaac_server_process:
+        print(">>> Terminating auto-started IsaacEnvServer...")
+        isaac_server_process.terminate()
+        try:
+            isaac_server_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            isaac_server_process.kill()
+
+    if sglang_server_process:
+        print(">>> Terminating auto-started SGLang server...")
+        sglang_server_process.terminate()
+        try:
+            sglang_server_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            sglang_server_process.kill()
+
+
+if __name__ == "__main__":
+    main()

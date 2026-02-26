@@ -1,0 +1,15 @@
+envs:
+  - name: BrickIsaac              # registered env name in env_registry.yaml
+    n_envs: 256                   # smaller set for validation
+    data_source: brick_isaac      # nickname for logging
+    seed: [5001, 5256, 1]        # disjoint seeds from training set
+    max_turns: 10                 # same as training
+    response_length_per_turn: 256
+    config:
+      backend: mock
+      n_views: 3
+      image_size: [256, 256]
+      grid_size: 8
+      max_steps: 200
+      format_reward: 0.1
+      success_reward: 1.0
