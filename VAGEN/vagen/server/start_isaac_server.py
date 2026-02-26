@@ -7,9 +7,8 @@ import os
 import sys
 from pathlib import Path
 import ray
-import logging
 import time
-from typing import Dict, Any, List
+from typing import Any, Callable
 import asyncio
 import signal
 from ray.exceptions import GetTimeoutError
@@ -158,13 +157,27 @@ class IsaacEnvServerProxy:
         return {"observation": None}
 
 
+def _run_with_init_heartbeat(
+    step_name: str,
+    fn: Callable[[], Any],
+) -> Any:
+    """Run an init step with start/end timing logs."""
+    start_t = time.perf_counter()
+    print(f"[INIT] {step_name}: start")
+    try:
+        return fn()
+    finally:
+        elapsed = time.perf_counter() - start_t
+        print(f"[INIT] {step_name}: done ({elapsed:.1f}s)")
+
+
 def main():
     """Main entry point - runs in main thread as required by Isaac Sim."""
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--task", type=str, default="Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0")
+    parser.add_argument("--task", type=str, default="multipicture_assembling_from_begin")
     # Allow enabling/disabling headless mode via CLI
     parser.add_argument("--headless", dest="headless", action="store_true", help="Run Isaac in headless mode (no GUI).")
     parser.add_argument("--no-headless", dest="headless", action="store_false", help="Run Isaac with GUI (disable headless).")
@@ -181,11 +194,15 @@ def main():
         default=0,
         help="Start a new clip every N simulation steps (0 = start once at step 0).",
     )
+    parser.add_argument("--ik-lambda-val", type=float, default=None)
     args = parser.parse_args()
     
     # Connect to Ray cluster
     NAMESPACE = "vagen_training"
+    ray_init_t = time.perf_counter()
+    print("[INIT] ray.init(address='auto'): start")
     ray.init(address="auto", namespace=NAMESPACE, ignore_reinit_error=True)
+    print(f"[INIT] ray.init(address='auto'): done ({time.perf_counter() - ray_init_t:.1f}s)")
 
     if "CUDA_VISIBLE_DEVICES" not in os.environ:
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -216,8 +233,6 @@ def main():
 
     # Import Isaac AFTER Ray and ENV setup
     from isaaclab.app import AppLauncher
-    import torch
-    from PIL import Image
     
     config = {
         "num_envs": args.num_envs,
@@ -239,23 +254,12 @@ def main():
     }
     
     print(f"Launching AppLauncher: {launcher_args}")
-    app_launcher = AppLauncher(launcher_args)
+    app_launcher = _run_with_init_heartbeat(
+        "AppLauncher",
+        lambda: AppLauncher(launcher_args),
+    )
     simulation_app = app_launcher.app
     print("Isaac Simulation App launched successfully")
-    # Debug: print camera/render settings
-    try:
-        import carb
-        settings_iface = carb.settings.get_settings()
-        print(
-            "[DEBUG]: carb settings",
-            {
-                "/isaaclab/cameras_enabled": settings_iface.get("/isaaclab/cameras_enabled"),
-                "/app/renderer": settings_iface.get("/app/renderer"),
-                "/rtx/enableRayTracing": settings_iface.get("/rtx/enableRayTracing"),
-            },
-        )
-    except Exception as e:
-        print(f"[DEBUG]: Failed to read carb settings: {e}")
     
     # Import after app launch
     import gymnasium as gym
@@ -263,67 +267,58 @@ def main():
     
     # Import env config from package
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-    from vagen.server.server import get_stack_cube_env_cfg
-    from vagen.server.server import StackingStateMachine
+    from vagen.server.server import VagenStackExecutionManager
+    from isaaclab_tasks.manager_based.manipulation.assembling import build_env_cfg
+    from isaaclab_tasks.manager_based.manipulation.assembling.config import resolve_task_id
     
     # Create environment
     print("Creating Isaac Lab environment...")
-    ret = get_stack_cube_env_cfg(
-        task_name=config["task"],
-        device=config["device"],
-        num_envs=config["num_envs"],
-        enable_cameras=config.get("enable_cameras", True)
+    resolved_task_id = resolve_task_id(config["task"])
+    if resolved_task_id != config["task"]:
+        print(
+            f"[WARN]: Requested task '{config['task']}' is not registered. "
+            f"Using '{resolved_task_id}' instead."
+        )
+    ret = _run_with_init_heartbeat(
+        "build_env_cfg",
+        lambda: build_env_cfg(
+            task_name=resolved_task_id,
+            cube_size=config.get("cube_size", 0.045),
+        ),
     )
 
+    # Keep scene env count aligned with server runtime config.
+    if hasattr(ret, "scene") and hasattr(ret.scene, "num_envs"):
+        before_envs = int(getattr(ret.scene, "num_envs", config["num_envs"]))
+        ret.scene.num_envs = int(config["num_envs"])
+        print(
+            f"[INIT] Override env_cfg.scene.num_envs: {before_envs} -> {int(config['num_envs'])}"
+        )
+
     if isinstance(ret, (tuple, list)) and len(ret) >= 3:
-        env_cfg, cube_names, aligned_poses = ret[0], ret[1], ret[2]
+        env_cfg, cube_names = ret[0], ret[1]
     else:
         # Newer API returned a single env_cfg object. Build compatible
-        # `cube_names` and `aligned_poses` from the env_cfg.scene where possible.
+        # `cube_names` from the env_cfg.scene where possible.
         env_cfg = ret
         cube_names = []
-        aligned_poses = []
         scene = env_cfg.scene
         # Collect attributes named like cube_1, cube_2, ...
         candidates = [n for n in dir(scene) if n.startswith("cube_")]
+
         def _idx(n):
-                return int(n.split("_")[1])
+            return int(n.split("_")[1])
+
         candidates = sorted(set(candidates), key=_idx)
         if candidates:
             cube_names = candidates
         else:
-            cube_names = [f"cube_{i+1}" for i in range(8)]
-        for name in cube_names:
-            cfg = getattr(scene, name)
-            pos = getattr(cfg.init_state, "pos", None)
-            rot = getattr(cfg.init_state, "rot", None)
+            cube_names = [f"cube_{i + 1}" for i in range(8)]
 
-    # Debug: print configured camera sensors before env creation
-    try:
-        cam_candidates = [n for n in dir(env_cfg.scene) if n.startswith("camera")]
-        if cam_candidates:
-            print("[DEBUG]: Camera sensors on env_cfg.scene:")
-            for cam_name in sorted(cam_candidates):
-                cam_cfg = getattr(env_cfg.scene, cam_name, None)
-                if cam_cfg is None:
-                    print(f"  - {cam_name}: None")
-                    continue
-                # best-effort attribute dump
-                print(
-                    f"  - {cam_name}: prim_path={getattr(cam_cfg, 'prim_path', None)}, "
-                    f"size=({getattr(cam_cfg, 'width', None)}x{getattr(cam_cfg, 'height', None)}), "
-                    f"data_types={getattr(cam_cfg, 'data_types', None)}, "
-                    f"spawn={type(getattr(cam_cfg, 'spawn', None)).__name__}"
-                )
-        else:
-            print("[DEBUG]: No camera sensors found on env_cfg.scene.")
-    except Exception as e:
-        print(f"[DEBUG]: Failed to enumerate camera sensors: {e}")
-    
-    # Camera names aligned to batch_gen.py and server.cfg
-    cam_names = ["camera", "camera_front", "camera_side", "camera_iso", "camera_iso2"]
-
-    env = gym.make(config["task"], cfg=env_cfg, render_mode="rgb_array" if args.record else None)
+    env = _run_with_init_heartbeat(
+        "gym.make",
+        lambda: gym.make(resolved_task_id, cfg=env_cfg, render_mode="rgb_array" if args.record else None),
+    )
     record_single_clip_mode = False
     video_prefix = ""
     record_clip_index = 0
@@ -378,41 +373,29 @@ def main():
 
     print(f"Environment '{config['task']}' created")
     print(f"Action space: {env.action_space}")
-    grid_origin = [0.5, 0.0, 0.001]
-    # Initialize state machine
-    line_thickness = 0.001 # Use 1mm for precision
-    # Increase cell size to be slightly larger than the cube (0.04m) 
-    # for easier placement and better visual spacing.
-    cell_size = 0.055 + line_thickness 
-    sm = StackingStateMachine(
-        env.unwrapped.num_envs, 
-        env.unwrapped.device, 
-        scene=env.unwrapped.scene,
-        cube_names=cube_names,
-        max_tasks=8,
-        cube_z_size=config.get("cube_size", 0.045),
-        grid_origin=grid_origin,
-        cell_size=cell_size,
+    line_thickness = 0.001  # Use 1mm for precision.
+    # Keep source cell spacing in sync with scene grid visualization.
+    cell_size = 0.055 + line_thickness
+    exec_mgr = _run_with_init_heartbeat(
+        "VagenStackExecutionManager",
+        lambda: VagenStackExecutionManager(
+            env=env,
+            cube_names=cube_names,
+            cube_size=config.get("cube_size", 0.045),
+            ik_lambda_val=args.ik_lambda_val,
+            task_name=config["task"],
+            cell_size=cell_size,
+        ),
     )
-    sm.set_stage(env.unwrapped.sim.stage)
-    # Register suction update on every physics substep
-    try:
-        env.unwrapped.sim.add_physics_callback("suction_step", sm.physics_suction_cb)
-    except Exception as e:
-        print(f"[WARN] Failed to add physics callback for suction: {e}")
-    print("State machine initialized")
-    
-    step_initial_task_idx = {}  # env_id -> (initial task index, is_submit) for step completion check
     
     # Initial reset
-    obs, _ = env.reset()
-    sm.set_last_obs(obs)
+    obs = _run_with_init_heartbeat(
+        "exec_mgr.reset_all",
+        lambda: exec_mgr.reset_all(),
+    )
     print("Environment reset complete")
     
-    init_ee_pos = obs['policy']['eef_pos']
-    
-    for i in range(env.unwrapped.num_envs):
-        sm.reset_state(i)
+    exec_mgr.reset_state_for_all_envs()
     
     print("[INFO]: Starting Isaac server main loop...")
 
@@ -443,49 +426,33 @@ def main():
     signal.signal(signal.SIGTERM, _request_shutdown)
 
     try:
-        frame_count = 0
-        step_count = 0
-        prev_task_indices = torch.full((env.unwrapped.num_envs,), -1, dtype=torch.long, device=env.unwrapped.device)
-    
         while simulation_app.is_running() and not shutdown_requested:
             
-            # Check if any step commands have completed
-            for env_id in list(step_initial_task_idx.keys()):
-                task_idx_now = int(sm.task_index[env_id].item())
-                sm_state_now = int(sm.state[env_id].item())
-
-                init_val = step_initial_task_idx[env_id]
-                if isinstance(init_val, dict):
-                    init_idx = int(init_val.get("init_idx", 0))
-                    was_submit = bool(init_val.get("was_submit", False))
-                    submit_success = init_val.get("submit_success", None)
-                elif isinstance(init_val, tuple):
-                    init_idx, was_submit = init_val
-                    submit_success = None
-                else:
-                    init_idx = int(init_val)
-                    was_submit = False
-                    submit_success = None
-
-                if (task_idx_now is not None and task_idx_now > init_idx) or sm_state_now == -1:
-                    # Decide done/success: explicit submit ends episode; otherwise keep running
-                    done_flag = True if was_submit else False
-                    if submit_success is None:
-                        success_flag = done_flag
-                    else:
-                        success_flag = bool(submit_success)
-                    # Capture new-task snapshot BEFORE clearing it so trainer/LLM receives accurate info
-                    num_tasks = int(sm.num_tasks_per_env[env_id].item())
-                    new_av = bool(sm.new_task_available[env_id].item())
-                    new_idx = int(sm.new_task_index[env_id].item())
-                    proxy_actor._set_step_done.remote(env_id, done_flag, success=success_flag, timeout=False, new_task_available=new_av, new_task_index=new_idx)
-                    print(f"Marked step done for env {env_id} (task_idx: {task_idx_now} state: {sm_state_now}) done={done_flag}")
-                    # Emit detailed debug snapshot for the trainer to see after success
-                    print(
-                        f"[Proxy->Trainer] env={env_id} STEP_DONE snapshot: task_index={task_idx_now} num_tasks={num_tasks} new_task_available={new_av} new_task_index={new_idx} state={sm_state_now}"
-                    )
-
-                    del step_initial_task_idx[env_id]
+            # Check if any step commands have completed.
+            for done_event in exec_mgr.collect_completed_step_events():
+                env_id = int(done_event["env_id"])
+                proxy_actor._set_step_done.remote(
+                    env_id,
+                    bool(done_event["done"]),
+                    success=bool(done_event["success"]),
+                    timeout=bool(done_event["timeout"]),
+                    new_task_available=bool(done_event["new_task_available"]),
+                    new_task_index=int(done_event["new_task_index"]),
+                )
+                print(
+                    f"Marked step done for env {env_id} "
+                    f"(task_idx: {int(done_event['task_index'])} state: {int(done_event['state'])}) "
+                    f"done={bool(done_event['done'])}"
+                )
+                print(
+                    "[Proxy->Trainer] "
+                    f"env={env_id} STEP_DONE snapshot: "
+                    f"task_index={int(done_event['task_index'])} "
+                    f"num_tasks={int(done_event['num_tasks'])} "
+                    f"new_task_available={bool(done_event['new_task_available'])} "
+                    f"new_task_index={int(done_event['new_task_index'])} "
+                    f"state={int(done_event['state'])}"
+                )
             
             # Check for commands from Proxy (Trainer)
             try:
@@ -495,203 +462,30 @@ def main():
             for env_id, cmd_type, data in commands:
                 if cmd_type == "reset":
                     seed = data
-                    # Try passing seed to env.reset; support common option keys
-                    reset_options = {"env_ids": [env_id]}
-                    reset_options["seed"] = int(seed)
-                    obs, _ = env.reset(options=reset_options)
-                    sm.set_last_obs(obs)
-
-                    # Reset state machine for this environment
-                    sm.reset_envs([env_id])
+                    obs = exec_mgr.handle_reset(env_id=env_id, seed=seed)
                     _start_manual_recording(reason=f"remote_reset_env_{env_id}")
-
                 elif cmd_type == "step":
                     goal = data
-                    # Debug: log receipt of remote step goal immediately
                     print(f"[Proxy] Received step goal for env {env_id}: {goal}")
-                    # Support explicit submission commands first (mirror actor behavior)
-                    is_submit = isinstance(goal, dict) and goal.get("type") == "submit"
-                    # Store initial task index and whether this was a submit
-                    step_initial_task_idx[env_id] = {
-                        "init_idx": int(sm.task_index[env_id].item()),
-                        "was_submit": bool(is_submit),
-                        "submit_success": None,
-                    }
-                    if is_submit:
-                        task_idx = int(sm.task_index[env_id].item())
-                        num_tasks = int(sm.num_tasks_per_env[env_id].item())
-                        is_success = (task_idx >= num_tasks)
-                        print(
-                            f"[Proxy] Submission for env {env_id}: task_idx={task_idx} num_tasks={num_tasks} success={is_success}"
-                        )
-                        step_initial_task_idx[env_id]["submit_success"] = bool(is_success)
-                        continue
-
-                    # Strict parsing for placement goals: require dict with explicit 'x','y','z' keys
-                    if not isinstance(goal, dict):
-                        raise ValueError(f"Invalid goal type: {type(goal)}")
-                    if not all(k in goal for k in ("x", "y", "z")):
-                        raise KeyError("Goal must contain keys 'x','y','z'")
-
-                    g_x = goal["x"]
-                    g_y = goal["y"]
-                    g_z = goal["z"]
-                    # ensure numeric
-                    g_x = float(g_x)
-                    g_y = float(g_y)
-                    g_z = float(g_z)
-
-                    # Convert grid coords -> world coords using SM parameters
-                    grid_origin = sm.grid_origin
-                    cell_size = sm.cell_size
-                    cube_size = sm.cube_z_size
-                    env_origin = env.unwrapped.scene.env_origins[env_id]
-                    target_x = grid_origin[0].item() + (g_x - 2.5) * cell_size
-                    target_y = grid_origin[1].item() + (g_y - 2.5) * cell_size
-                    target_z = (g_z + 0.5) * cube_size + 0.002
-
-                    # Apply environment origin offset for multi-env support
-                    target_pos_w = env_origin + torch.tensor([target_x, target_y, target_z], device=env_origin.device)
-
-                    current_task_idx = int(sm.task_index[env_id].item())
-                    max_tasks = int(getattr(sm, "max_tasks", sm.target_positions.shape[1]))
-                    if current_task_idx >= max_tasks:
-                        print(
-                            f"[Proxy] Warning: env {env_id} task_idx={current_task_idx} exceeds max_tasks={max_tasks}. "
-                            "Treating as timeout termination."
-                        )
-                        try:
-                            sm.num_tasks_per_env[env_id] = max_tasks
-                            sm.state[env_id] = sm.IDLE
-                        except Exception:
-                            pass
-                        # Immediately terminate this step as a timeout (done=True, success=False)
+                    result = exec_mgr.handle_step_goal(env_id=env_id, goal=goal)
+                    if result.get("immediate_done", False):
+                        payload = result["done_payload"]
                         proxy_actor._set_step_done.remote(
                             env_id,
-                            True,
-                            success=False,
-                            timeout=True,
-                            new_task_available=False,
-                            new_task_index=-1,
+                            payload["done"],
+                            success=payload["success"],
+                            timeout=payload["timeout"],
+                            new_task_available=payload["new_task_available"],
+                            new_task_index=payload["new_task_index"],
                         )
-                        print(f"[Proxy->Trainer] env={env_id} TIMEOUT termination (task_idx={current_task_idx} max_tasks={max_tasks})")
-                        if env_id in step_initial_task_idx:
-                            del step_initial_task_idx[env_id]
                         continue
-                    sm.num_tasks_per_env[env_id] = current_task_idx + 1
-                    sm.target_positions[env_id, current_task_idx] = target_pos_w
-                    sm.state[env_id] = sm.APPROACH_CUBE
-                    sm.state_timer[env_id] = 0
-
-                    print(
-                        f"[Proxy] Parsed goal for env {env_id}: grid=({g_x},{g_y},{g_z}) "
-                        f"-> world=({target_x:.4f},{target_y:.4f},{target_z:.4f}) task_idx={current_task_idx}"
-                    )
-                    # Debug: print env origin and full world target for verification
-                    try:
-                        print(f"[Proxy] env_origin[{env_id}] = {env_origin.cpu().numpy() if hasattr(env_origin,'cpu') else env_origin} target_pos_w = {target_pos_w}")
-                    except Exception:
-                        print(f"[Proxy] env_origin[{env_id}] = {env_origin} target_pos_w = {target_pos_w}")
-                    # Mark that a new task was delivered so teleport logic and trainers can react.
-                    try:
-                        sm.new_task_available[env_id] = True
-                        sm.new_task_index[env_id] = current_task_idx
-                        # read back to confirm
-                        try:
-                            rb = bool(sm.new_task_available[env_id].item())
-                        except Exception:
-                            rb = sm.new_task_available[env_id]
-                        print(f"[Proxy] Set sm.new_task_available for env {env_id} -> index={current_task_idx} (readback={rb})")
-                    except Exception as e:
-                        print(f"[Proxy] Warning: failed to set new_task flags for env {env_id}: {e}")
             
 
             # Camera readback is expensive. Only capture frames when proxy
             # requests are pending; video recording is handled by RecordVideo.
-            should_capture = commands is not None and len(commands) > 0
-            if should_capture:
-                # Build set of env_ids explicitly requested by proxy commands
-                requested_envs = set()
-                try:
-                    requested_envs = {int(c[0]) for c in commands}
-                except Exception:
-                    requested_envs = set()
+            exec_mgr.capture_requested_images(commands=commands, proxy_actor=proxy_actor)
 
-                for env_id in range(config["num_envs"]):
-                    # Capture only envs explicitly requested by the proxy/trainer.
-                    if env_id not in requested_envs:
-                        continue
-
-                    img_list = []
-                    for cam_name in cam_names:
-                        cam = env.unwrapped.scene[cam_name]
-                        rgb_tensor = cam.data.output['rgb'][env_id]
-                        rgb_np = rgb_tensor.cpu().numpy().astype('uint8')
-                        img_list.append(Image.fromarray(rgb_np))
-
-                    proxy_actor.update_state.remote(env_id, img_list)
-
-            frame_count += 1
-            # Drive state machine so proxy delivers actions when targets are set
-            actions = sm.compute_action(obs)
-
-            for env_id in range(config["num_envs"]):
-                if getattr(sm, "new_task_available", None) is not None and sm.new_task_available[env_id].item():
-                    new_idx = int(sm.new_task_index[env_id].item())
-                    print(f"[Env {env_id}] Detected new_task_available=True new_idx={new_idx}")
-                    if new_idx >= 0 and new_idx < len(cube_names):
-                        next_cube_name = cube_names[new_idx]
-                        try:
-                            cube_asset = env.unwrapped.scene[next_cube_name]
-                        except Exception as e:
-                            print(f"[Env {env_id}] Warning: cube asset '{next_cube_name}' not found: {e}")
-                            cube_asset = None
-
-                        if cube_asset is not None:
-                            # check current cube world z; skip if already on table
-                            cube_pos_w = cube_asset.data.root_pos_w[env_id]
-                            cube_z = float(cube_pos_w[2].item()) if isinstance(cube_pos_w[2], torch.Tensor) else float(cube_pos_w[2])
-                            print(f"[Env {env_id}] cube '{next_cube_name}' z={cube_z:.4f}")
-                            # For reliability during testing, force teleport the cube to the pick
-                            # position whenever a new task arrives. This avoids edge cases where
-                            # the cube is slightly off the expected location and the SM stalls.
-                            print(f"[Env {env_id}] Forcing teleport of {next_cube_name} to pick position (test-mode)")
-                            env_origin = env.unwrapped.scene.env_origins[env_id]
-                            pick_offset = torch.tensor([
-                                float(sm.source_pick_pos[0]),
-                                float(sm.source_pick_pos[1]),
-                                float(config.get("cube_size", 0.045)) / 2.0
-                            ], device=env_origin.device)
-                            target_pos_w = env_origin + pick_offset
-                            # ensure float32 and same device
-                            target_pos_w = target_pos_w.to(dtype=torch.float32, device=env_origin.device)
-                            target_quat_w = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env_origin.device, dtype=torch.float32)
-                            root_pose = torch.cat([target_pos_w, target_quat_w], dim=-1).unsqueeze(0)
-
-                            # Debug: print pre-write details (device, dtype, values)
-                            try:
-                                print(f"[Env {env_id}] TELEPORT PREWRITE env_origin={env_origin} pick_offset={pick_offset} target_pos_w={target_pos_w} target_quat_w={target_quat_w} root_pose={root_pose}")
-                                print(f"[Env {env_id}] cube current pos (pre) = {cube_asset.data.root_pos_w[env_id]}")
-                            except Exception:
-                                pass
-
-                            # Write pose
-                            cube_asset.write_root_pose_to_sim(
-                                root_pose,
-                                env_ids=torch.tensor([env_id], device=env_origin.device, dtype=torch.int32)
-                            )
-
-                            # Read back and print to verify
-                            try:
-                                new_pos = cube_asset.data.root_pos_w[env_id]
-                                print(f"[Env {env_id}] TELEPORT POSTWRITE cube pos (post) = {new_pos}")
-                            except Exception:
-                                print(f"[Env {env_id}] TELEPORT POSTWRITE: unable to read back cube pos")
-                # clear new task flag
-                sm.new_task_available[env_id] = False
-                sm.new_task_index[env_id] = -1
-            obs, _, _, _, _ = env.step(actions)
-            sm.set_last_obs(obs)
+            obs = exec_mgr.step(obs)
 
     except KeyboardInterrupt:
         shutdown_reason = "keyboard interrupt"
@@ -707,6 +501,10 @@ def main():
     finally:
         print(f"Shutting down Isaac server... reason={shutdown_reason}")
         # IMPORTANT: close env (RecordVideo flush) before shutting down SimulationApp.
+        try:
+            exec_mgr.close()
+        except Exception as e:
+            print(f"[WARN] exec_mgr.close() failed during shutdown: {e}")
         try:
             env.close()
             print("Environment closed (recording finalized if enabled).")

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import signal
 import shutil
 import subprocess
@@ -33,7 +34,7 @@ import ray
 from ray.exceptions import GetTimeoutError
 
 
-DEFAULT_TASK = "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0"
+DEFAULT_TASK = "Isaac-Assembling-Cube-UR10-Short-Suction-Joint-Pos-v0"
 DEFAULT_GOALS = "2,2,0;3,2,0;3,3,0"
 DEFAULT_CAMERAS = "0,1,2,3,4"
 DEFAULT_RAY_HEAD_LOG = "outputs/ray_test.log"
@@ -228,6 +229,7 @@ def start_server_if_needed(args: argparse.Namespace) -> Tuple[Optional[subproces
     env = os.environ.copy()
     if args.server_cuda_visible_devices:
         env["CUDA_VISIBLE_DEVICES"] = args.server_cuda_visible_devices
+    env.setdefault("PYTHONUNBUFFERED", "1")
 
     print(f"[INFO] Starting server process: {' '.join(cmd)}")
     print(f"[INFO] Server log: {log_path}")
