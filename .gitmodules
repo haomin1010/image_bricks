@@ -1,0 +1,4 @@
+[submodule "VAGEN/verl"]
+	path = VAGEN/verl
+	url = https://github.com/JamesKrW/verl.git
+	branch = vagen-lite

@@ -1,0 +1,27 @@
+# image_bricks 项目依赖
+# 
+# 注意：VAGEN和Isaac需要单独安装：
+# 
+# 1. 安装VAGEN:
+#    cd VAGEN
+#    pip install -e .
+#    cd verl
+#    USE_MEGATRON=0 bash scripts/install_vllm_sglang_mcore.sh
+#    pip install --no-deps -e .
+#    cd ../..
+#    pip install "trl==0.26.2"
+#
+# 2. 安装Isaac:
+#    cd Isaac
+#    pip install -e .
+#    cd ..
+#
+# 3. 安装根项目（可选）:
+#    pip install -e .
+
+# 基础依赖
+numpy>=1.20.0
+pillow>=8.0.0
+
+# 其他通用依赖可以在这里添加
+
