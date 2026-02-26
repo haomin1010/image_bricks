@@ -280,6 +280,49 @@ def image_count(payload: Dict[str, Any]) -> int:
     return 0
 
 
+def _as_pil_image(obj: Any) -> Any:
+    # Lazy import to keep startup light and avoid hard dependency at module import time.
+    from PIL import Image  # type: ignore
+
+    if hasattr(obj, "save"):
+        return obj
+
+    # Convert array-like inputs to PIL image.
+    try:
+        import numpy as np  # type: ignore
+
+        arr = np.asarray(obj)
+        if arr.dtype != np.uint8:
+            arr = arr.astype(np.uint8)
+        return Image.fromarray(arr)
+    except Exception as exc:
+        raise TypeError(f"Unsupported image object type: {type(obj)!r}") from exc
+
+
+def dump_payload_images(
+    payload: Dict[str, Any],
+    output_dir: Path,
+    stage: str,
+    index: Optional[int] = None,
+) -> List[str]:
+    images = payload.get("images", [])
+    if not isinstance(images, list) or len(images) == 0:
+        return []
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    saved: List[str] = []
+    for cam_idx, image_obj in enumerate(images):
+        img = _as_pil_image(image_obj)
+        if index is None:
+            filename = f"{stage}_cam{cam_idx:02d}.png"
+        else:
+            filename = f"{stage}_{index:03d}_cam{cam_idx:02d}.png"
+        out_path = output_dir / filename
+        img.save(out_path)
+        saved.append(str(out_path))
+    return saved
+
+
 def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
     goals = parse_goals(args.goals)
 
@@ -304,6 +347,10 @@ def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
         "goals": goals,
         "steps": [],
     }
+    image_output_dir = Path(args.image_output_dir).resolve() / f"env_{int(env_id)}_{int(time.time())}"
+    if args.require_images:
+        image_output_dir.mkdir(parents=True, exist_ok=True)
+        summary["image_output_dir"] = str(image_output_dir)
 
     try:
         reset_resp = ray_get_with_timeout(
@@ -314,6 +361,10 @@ def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
         expect_keys(reset_resp, ["images", "info"], "remote_reset")
         print("[INFO] reset done.")
         summary["reset_info"] = reset_resp.get("info", {})
+        if args.require_images:
+            reset_paths = dump_payload_images(reset_resp, image_output_dir, stage="reset")
+            summary["reset_image_paths"] = reset_paths
+            print(f"[INFO] Saved reset images: {len(reset_paths)} -> {image_output_dir}")
 
         for idx, goal in enumerate(goals):
             method_name = "remote_step"
@@ -338,6 +389,11 @@ def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
             }
             if args.require_images and step_item["image_count"] == 0:
                 raise AssertionError(f"{method_name}#{idx} returned zero images")
+            if args.require_images:
+                step_paths = dump_payload_images(resp, image_output_dir, stage="step", index=idx)
+                if len(step_paths) == 0:
+                    raise AssertionError(f"{method_name}#{idx} expected images to be dumped but none were saved")
+                step_item["image_paths"] = step_paths
             print(
                 f"[INFO] {method_name}#{idx} goal={goal} done={step_item['done']} "
                 f"reward={step_item['reward']:.3f} images={step_item['image_count']} "
@@ -376,6 +432,12 @@ def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
             "image_count": submit_images,
             "info": submit_info,
         }
+        if args.require_images:
+            submit_paths = dump_payload_images(submit_resp, image_output_dir, stage="submit")
+            if len(submit_paths) == 0:
+                raise AssertionError("remote_submit expected images to be dumped but none were saved")
+            summary["submit"]["image_paths"] = submit_paths
+            print(f"[INFO] Saved submit images: {len(submit_paths)} -> {image_output_dir}")
         return summary
     finally:
         release_env_slot(actor, int(env_id), timeout_s=args.rpc_timeout_s)
@@ -441,6 +503,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_bool,
         default=True,
         help="Fail if any RPC returns no images. true/false.",
+    )
+    parser.add_argument(
+        "--image-output-dir",
+        type=str,
+        default="outputs/ray_test_images",
+        help="Directory used to dump returned images when --require-images true.",
     )
 
     parser.add_argument("--rpc-timeout-s", type=float, default=30.0, help="Timeout for quick RPC calls.")

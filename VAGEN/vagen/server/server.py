@@ -121,7 +121,6 @@ class StackingStateMachine:
         if ee_pos is None:
             return
 
-        # 1) Attach condition: same logic as stack_cube_sm.py (local-space distance)
         grabbing_mask = (self.state == self.GRASP) & (self.attached_cube_idx == -1)
         grabbing_env_ids = torch.where(grabbing_mask)[0]
         if grabbing_env_ids.numel() > 0:
