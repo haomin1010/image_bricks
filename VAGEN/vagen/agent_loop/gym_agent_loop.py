@@ -20,19 +20,6 @@ import importlib
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
-# #region agent log
-import json
-import time
-_DEBUG_LOG_PATH = "/home/user/workspace/image_bricks/.cursor/debug.log"
-def _dbg_concat(loc: str, msg: str, data: dict):
-    try:
-        data["mode"] = "concat"
-        with open(_DEBUG_LOG_PATH, "a") as f:
-            f.write(json.dumps({"location": loc, "message": msg, "data": data, "timestamp": int(time.time() * 1000)}) + "\n")
-    except Exception:
-        pass
-# #endregion
-
 def _flatten_text_only_content(msg):
     """
     convert message['content'] from multimodal list to plain text
@@ -263,26 +250,6 @@ class GymAgentLoop(AgentLoopBase):
             logger.warning(
                 f"In env:{agent_data.env_name}, response_ids length {len(response_ids)} exceeds response_length {self.response_length}",
             )
-
-        # #region agent log
-        final_prompt = prompt_ids[-self.prompt_length:] if len(prompt_ids) > self.prompt_length else prompt_ids
-        final_resp = response_ids[: self.response_length]
-        _dbg_concat("gym_agent_loop:return", "concat output to verl", {
-            "prompt_ids_len_raw": len(prompt_ids),
-            "response_ids_len_raw": len(response_ids),
-            "prompt_ids_len_final": len(final_prompt),
-            "response_ids_len_final": len(final_resp),
-            "total_seq_len": len(final_prompt) + len(final_resp),
-            "response_mask_len": len(agent_data.response_mask[: self.response_length]),
-            "mask_sum": sum(agent_data.response_mask[: self.response_length]),
-            "num_images": len(agent_data.image_data) if agent_data.image_data else 0,
-            "prompt_length_limit": self.prompt_length,
-            "response_length_limit": self.response_length,
-            "prompt_truncated": len(prompt_ids) > self.prompt_length,
-            "response_truncated": len(response_ids) > self.response_length,
-            "num_turns": agent_data.env_turns,
-        })
-        # #endregion
 
         output = AgentLoopOutput(
             prompt_ids=prompt_ids[-self.prompt_length:],
