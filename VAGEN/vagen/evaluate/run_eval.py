@@ -351,10 +351,11 @@ def main() -> None:
                 cmd = [
                     sys.executable,
                     server_script,
-                    "--num-envs", "8",
-                    "--device", "cpu",
+                    "--num-envs", "1",
+                    # TODO:
+                    "--device", "cuda:0",
                     "--task", "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
-                    #"--headless"
+                    "--headless"
                 ]
 
                 env = os.environ.copy()
@@ -373,6 +374,7 @@ def main() -> None:
                 
                 # Wait for server to register (poll for actor)
                 print(">>> Waiting for IsaacEnvServer to register (max 120s)...")
+                # TODO:
                 for i in range(120):
                     try:
                         ray.get_actor("IsaacEnvServer")

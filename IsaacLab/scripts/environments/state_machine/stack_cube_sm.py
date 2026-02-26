@@ -354,7 +354,7 @@ class StackingStateMachine:
 
             # --- 强制超时自动切换状态 (每阶段约 40s) ---
             if self.state[i] not in [-1, self.GRASP, self.RELEASE] and self.state_timer[i] > 1000:
-                print(f"[Env {i}] !!! STATE {self.state[i].item()} TIMEOUT !!! Forcing transition.")
+                print(f"[Env {i}] !!! STATE {self.state[i].item()} TIMEOUT !!! Forcing transition. (stack_cube_sm.py)")
                 if self.state[i] == self.APPROACH_CUBE: self.state[i] = self.DESCEND_CUBE
                 elif self.state[i] == self.DESCEND_CUBE: self.state[i] = self.GRASP
                 elif self.state[i] == self.LIFT: self.state[i] = self.APPROACH_TARGET
