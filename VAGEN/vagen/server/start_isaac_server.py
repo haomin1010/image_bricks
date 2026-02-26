@@ -409,15 +409,10 @@ def main():
     sm.set_last_obs(obs)
     print("Environment reset complete")
     
-    # 彻底解决启动时“向外甩动”的问题：
-    # 1. 原因是第一次 compute_action 时末端位置可能还没更新，导致位移差 diff_pos 巨大。
-    # 2. 我们通过一次空跑或更新状态来同步。
-    # 强制将状态机内部的目标位置初始化为当前位置，防止第一帧突跳
     init_ee_pos = obs['policy']['eef_pos']
     
     for i in range(env.unwrapped.num_envs):
         sm.reset_state(i)
-        #sm.idle_pos[i] = init_ee_pos[i]  # Set IDLE position to initial EE position
     
     print("[INFO]: Starting Isaac server main loop...")
 
@@ -453,8 +448,6 @@ def main():
         prev_task_indices = torch.full((env.unwrapped.num_envs,), -1, dtype=torch.long, device=env.unwrapped.device)
     
         while simulation_app.is_running() and not shutdown_requested:
-            # Update simulation
-            simulation_app.update()
             
             # Check if any step commands have completed
             for env_id in list(step_initial_task_idx.keys()):
@@ -612,11 +605,10 @@ def main():
                     except Exception as e:
                         print(f"[Proxy] Warning: failed to set new_task flags for env {env_id}: {e}")
             
-            # --- IMAGE CAPTURE (only when needed) ---
-            # Capture camera images only when recording is enabled or when the
-            # proxy/trainer has pending commands requesting env images. This
-            # avoids expensive per-frame readbacks for all envs/cameras.
-            should_capture = args.record or (commands is not None and len(commands) > 0)
+
+            # Camera readback is expensive. Only capture frames when proxy
+            # requests are pending; video recording is handled by RecordVideo.
+            should_capture = commands is not None and len(commands) > 0
             if should_capture:
                 # Build set of env_ids explicitly requested by proxy commands
                 requested_envs = set()
@@ -626,9 +618,8 @@ def main():
                     requested_envs = set()
 
                 for env_id in range(config["num_envs"]):
-                    # If recording, always capture env 0 for movie; otherwise only
-                    # capture envs explicitly requested by the proxy/trainer.
-                    if not args.record and env_id not in requested_envs:
+                    # Capture only envs explicitly requested by the proxy/trainer.
+                    if env_id not in requested_envs:
                         continue
 
                     img_list = []
@@ -644,11 +635,7 @@ def main():
             # Drive state machine so proxy delivers actions when targets are set
             actions = sm.compute_action(obs)
 
-            # Teleport-on-new-task: when task_index increases, move the next cube
-            # to the pick position so the SM can grab it. This mirrors the
-            # canonical implementation's behavior to ensure cubes are available.
             for env_id in range(config["num_envs"]):
-                # If a new task was delivered, teleport the corresponding cube
                 if getattr(sm, "new_task_available", None) is not None and sm.new_task_available[env_id].item():
                     new_idx = int(sm.new_task_index[env_id].item())
                     print(f"[Env {env_id}] Detected new_task_available=True new_idx={new_idx}")
@@ -705,12 +692,6 @@ def main():
                 sm.new_task_index[env_id] = -1
             obs, _, _, _, _ = env.step(actions)
             sm.set_last_obs(obs)
-            # Debug: verify physics callback is ticking
-            if step_count % 200 == 0:
-                try:
-                    print(f"[SuctionCB] counter={sm._cb_counter}")
-                except Exception:
-                    pass
 
     except KeyboardInterrupt:
         shutdown_reason = "keyboard interrupt"
