@@ -103,6 +103,7 @@ class StackingStateMachine:
 
     def set_last_obs(self, obs):
         self._last_obs = obs
+        self._cb_error_logged = False
 
     def physics_suction_cb(self, dt):
         if not isinstance(self._last_obs, dict):
@@ -354,15 +355,21 @@ class StackingStateMachine:
                     target_pos = torch.tensor([0.4, 0.0, 0.4], device=self.device)
                     gripper_cmd = 1.0
 
-            # --- 强制超时自动切换状态 (每阶段约 40s) ---
-            if self.state[i] not in [-1, self.GRASP, self.RELEASE] and self.state_timer[i] > 150:
-                print(f"[Env {i}] !!! STATE {self.state[i].item()} TIMEOUT !!! Forcing transition.")
-                if self.state[i] == self.APPROACH_CUBE: self.state[i] = self.DESCEND_CUBE
-                elif self.state[i] == self.DESCEND_CUBE: self.state[i] = self.GRASP
-                elif self.state[i] == self.LIFT: self.state[i] = self.APPROACH_TARGET
-                elif self.state[i] == self.APPROACH_TARGET: self.state[i] = self.DESCEND_TARGET
-                elif self.state[i] == self.DESCEND_TARGET: self.state[i] = self.RELEASE
-                elif self.state[i] == self.RETRACT: pass # 已在上面处理
+            state_i = int(self.state[i].item())
+            if state_i >= 0 and state_i not in [self.GRASP, self.RELEASE] and self.state_timer[i] > 150:
+                print(f"[Env {i}] !!! STATE {state_i} TIMEOUT !!! Forcing transition. (server.py)")
+                if state_i == self.APPROACH_CUBE:
+                    self.state[i] = self.DESCEND_CUBE
+                elif state_i == self.DESCEND_CUBE:
+                    self.state[i] = self.GRASP
+                elif state_i == self.LIFT:
+                    self.state[i] = self.APPROACH_TARGET
+                elif state_i == self.APPROACH_TARGET:
+                    self.state[i] = self.DESCEND_TARGET
+                elif state_i == self.DESCEND_TARGET:
+                    self.state[i] = self.RELEASE
+                elif state_i == self.RETRACT:
+                    pass
                 self.state_timer[i] = 0
 
             # 调整控制增益与速度限制，使动作更轻柔并保持精度
@@ -661,9 +668,6 @@ def get_stack_cube_env_cfg(task_name, device, num_envs, enable_cameras):
             )
     else:
         print("[INFO]: Cameras are disabled via CLI. Skipping TiledCamera setup.")
-
-    # 移除导致 TiledCamera 报错的语义映射逻辑
-    # 我们只通过 RGB 信息给 Qwen
 
     # Add Grid Lines (Physical Assets)
     origin = grid_origin
