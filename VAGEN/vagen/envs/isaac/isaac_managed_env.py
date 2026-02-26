@@ -25,10 +25,13 @@ The ``env_config`` dict in the dataset YAML should contain at least:
 
 from __future__ import annotations
 
+import json
 import logging
+import random
 import ray
 import asyncio
 from dataclasses import dataclass, fields
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
@@ -72,6 +75,9 @@ class IsaacManagedEnvConfig:
     format_reward: float = 0.1
     success_reward: float = 1.0
 
+    # Dataset
+    dataset_root: str = "/mnt/data/image_bricks/IsaacLab/scripts/data_gen/output_snapshots"
+
 
 _CONFIG_FIELDS = {f.name for f in fields(IsaacManagedEnvConfig)}
 
@@ -104,6 +110,13 @@ class IsaacManagedEnv(GymImageEnv):
         self.steps_taken: int = 0        
         self.trajectory: List[Dict[str, Any]] = []
 
+        # Scan dataset directory and cache valid entries on startup
+        self._dataset_entries: List[Dict] = self._scan_dataset(self.config.dataset_root)
+        if not self._dataset_entries:
+            logger.warning("Dataset is empty or not found at: %s", self.config.dataset_root)
+        else:
+            logger.info("Loaded %d dataset entries from %s", len(self._dataset_entries), self.config.dataset_root)
+
     async def _get_server(self):
         """Lazily obtain the per-worker server handle singleton."""
         if IsaacManagedEnv._server_handle is not None:
@@ -132,8 +145,12 @@ class IsaacManagedEnv(GymImageEnv):
 
     async def reset(self, seed: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
-        Allocate a sub-env ID (on first call) and reset it on the Isaac side.
-        Returns camera-0's image as the initial observation.
+        Allocate a sub-env ID (on first call), then load the initial observation
+        from the pre-rendered dataset instead of querying the Isaac simulation.
+
+        Images are selected deterministically from the dataset using ``seed``.
+        The JSON metadata associated with the chosen snapshot is used to build
+        the target-block description provided to the VLM.
         """
         server = await self._get_server()
 
@@ -141,27 +158,40 @@ class IsaacManagedEnv(GymImageEnv):
         if self._sub_env_id is None:
             self._sub_env_id = await server.allocate_env_id.remote()
 
-        # Reset on the Isaac side
-        response = await server.remote_reset.remote(
-            self._sub_env_id, seed
-        )
-        all_images = response["images"]
-        env_info = response["info"]
+        # Reset physics side (slot state / cube positions) but ignore its images
+        try:
+            response = await asyncio.wait_for(
+                server.remote_reset.remote(self._sub_env_id, seed), timeout=120.0
+            )
+            env_info = response.get("info", {})
+        except Exception as e:
+            logger.error("Failed to reset Isaac environment (timeout or crash): %s", e)
+            env_info = {}
 
         self.total_reward = 0.0
         self.steps_taken = 0
         self.trajectory = []
 
-        # Build initial observation: camera 0 only
-        target_desc = ""
-        if "target_description" in env_info:
-            target_desc = env_info["target_description"] + "\n"
+        # Load pre-rendered images from dataset (deterministic via seed)
+        all_images = self._load_dataset_images(seed)
+        # Cache for use in step() query actions (cam 0=top, 1=front, 2=side, 3=iso, 4=iso2)
+        self._dataset_images_cache = all_images
 
-        cam0_images = [all_images[0]] if len(all_images) > 0 else []
-        obs_text = target_desc + init_observation_template(
-            img_placeholder=self.config.image_placeholder,
+        # Build target description from dataset JSON
+        target_desc = self._load_target_description(seed)
+        env_info["target_description"] = target_desc
+
+        logger.info("reset: loaded dataset entry %d (seed=%d), %d images",
+                    seed % max(len(self._dataset_entries), 1), seed, len(all_images))
+
+        # Build initial observation: ALL dataset views so VLM understands the target from every angle
+        cam_labels = ["Top view", "Front view", "Side view", "Iso view", "Iso2 view"]
+        img_phs = "\n".join(self.config.image_placeholder for _ in all_images)
+        obs_text = (target_desc + "\n" if target_desc else "") + init_observation_template(
+            img_placeholders=img_phs,
+            camera_labels=cam_labels[: len(all_images)],
         )
-        obs = self._make_multi_image_obs(obs_text, cam0_images)
+        obs = self._make_multi_image_obs(obs_text, all_images)
         return obs, env_info
 
     async def step(
@@ -191,7 +221,6 @@ class IsaacManagedEnv(GymImageEnv):
         info.update(parsed)
 
         coordinate = parsed.get("coordinate")
-        query_cameras = parsed.get("query_cameras")
         is_submit = parsed.get("is_submit", False)
         format_correct = parsed.get("format_correct", False)
 
@@ -205,133 +234,112 @@ class IsaacManagedEnv(GymImageEnv):
             },
         }
 
-        if query_cameras is not None:
+        if coordinate is not None:
             # ----------------------------------------------------------
-            # Query action — return requested camera views
+            # Place action — execute physics then render all 5 cameras
             # ----------------------------------------------------------
-            # Validate camera IDs
-            invalid_ids = [c for c in query_cameras if c >= self.config.n_cameras]
-            if invalid_ids:
-                # Some camera IDs out of range — treat as parse error
-                server = await self._get_server()
-                all_images = await server.render.remote(self._sub_env_id)
-                cam0_images = [all_images[0]] if len(all_images) > 0 else []
-                msg = (
-                    f"Invalid camera ID(s): {invalid_ids}. "
-                    f"Valid IDs are 0..{self.config.n_cameras - 1}."
-                )
-                obs = self._make_multi_image_obs(
-                    action_template(
-                        action_result=msg,
-                        img_placeholder=self.config.image_placeholder,
-                    ),
-                    cam0_images,
-                    action_str=action_str,
-                )
-                format_correct = False
-                metrics["turn_metrics"]["action_is_valid"] = False
-            else:
-                server = await self._get_server()
-                all_images = await server.render.remote(self._sub_env_id)
-                selected_images = []
-                for cam_id in query_cameras:
-                    if cam_id < len(all_images):
-                        selected_images.append(all_images[cam_id])
-                    else:
-                        selected_images.append(
-                            Image.new("RGB", self.config.image_size, (0, 0, 0))
-                        )
-
-                img_phs = "\n".join(
-                    self.config.image_placeholder for _ in query_cameras
-                )
-                obs_text = query_result_template(
-                    camera_ids=query_cameras,
-                    img_placeholders=img_phs,
-                )
-                obs = self._make_multi_image_obs(
-                    obs_text, selected_images, action_str=action_str
-                )
-                metrics["turn_metrics"]["action_is_effective"] = True
-
-        elif coordinate is not None:
-            # ----------------------------------------------------------
-            # Place action — execute placement, return camera 0
-            # ----------------------------------------------------------
-            goal = {
-                "x": coordinate["x"],
-                "y": coordinate["y"],
-                "z": coordinate["z"],
-            }
+            goal = {"x": coordinate["x"], "y": coordinate["y"], "z": coordinate["z"]}
             server = await self._get_server()
-            response = await server.remote_step.remote(self._sub_env_id, goal)
+            try:
+                step_response = await asyncio.wait_for(
+                    server.remote_step.remote(self._sub_env_id, goal), timeout=300.0
+                )
+                step_reward = step_response.get("reward", 0.0)
+                step_done = step_response.get("done", False)
+                step_success = step_response.get("info", {}).get("success", False)
+            except Exception as e:
+                logger.error("Failed to step Isaac (timeout or crash): %s", e)
+                step_reward = 0.0
+                step_done = True
+                step_success = False
 
-            all_images = response["images"]
-            step_reward = response["reward"]
-            step_done = response["done"]
-            step_info = response["info"]
+            # Render all cameras for VLM observation
+            try:
+                isaac_images = await asyncio.wait_for(
+                    server.render.remote(self._sub_env_id), timeout=30.0
+                )
+                if not isaac_images:
+                    raise ValueError("render returned empty list")
+            except Exception as e:
+                logger.warning("Isaac render failed, using gray fallback: %s", e)
+                n = len(getattr(self, "_dataset_images_cache", [None] * 5))
+                isaac_images = [Image.new("RGB", self.config.image_size, (50, 50, 50)) for _ in range(n)]
 
-            reward += step_reward
+            cam_labels = ["Top", "Front", "Side", "Iso", "Iso2"]
+            label_lines = [
+                f"{cam_labels[i] if i < len(cam_labels) else f'Cam{i}'}: {self.config.image_placeholder}"
+                for i in range(len(isaac_images))
+            ]
+            img_section = "\n".join(label_lines)
+            obs_str = f"Block placed at ({coordinate['x']}, {coordinate['y']}, {coordinate['z']})."
+            obs_text = f"[System]: {obs_str}\n{img_section}\nPlace the next cube or submit when done."
+
+            reward += self.config.format_reward + step_reward
+            if step_success:
+                reward += self.config.success_reward
+                metrics["traj_metrics"]["success"] = True
             done = step_done
             metrics["turn_metrics"]["action_is_effective"] = True
 
-            if step_info.get("success", False):
-                reward += self.config.success_reward
-                metrics["traj_metrics"]["success"] = True
-
-            cam0_images = [all_images[0]] if len(all_images) > 0 else []
-            obs_text = action_template(
-                action_result=response["obs_str"],
-                img_placeholder=self.config.image_placeholder,
-            )
-            obs = self._make_multi_image_obs(
-                obs_text, cam0_images, action_str=action_str
-            )
-            info.update(step_info)
+            obs = self._make_multi_image_obs(obs_text, isaac_images, action_str=action_str)
+            info.update({"success": step_success, "timeout": False})
 
         elif is_submit:
             # ----------------------------------------------------------
-            # Submit action — end the episode
+            # Submit action — execute physics final evaluation + render all cameras
             # ----------------------------------------------------------
             goal = {"type": "submit"}
             server = await self._get_server()
-            response = await server.remote_step.remote(self._sub_env_id, goal)
+            try:
+                step_response = await asyncio.wait_for(
+                    server.remote_step.remote(self._sub_env_id, goal), timeout=300.0
+                )
+                step_reward = step_response.get("reward", 0.0)
+                step_success = step_response.get("info", {}).get("success", False)
+            except Exception as e:
+                logger.error("Failed to submit Isaac (timeout or crash): %s", e)
+                step_reward = 0.0
+                step_success = False
 
-            all_images = response["images"]
-            step_reward = response["reward"]
-            step_info = response["info"]
+            # Render final state for VLM
+            try:
+                isaac_images = await asyncio.wait_for(
+                    server.render.remote(self._sub_env_id), timeout=30.0
+                )
+                if not isaac_images:
+                    raise ValueError("render returned empty list")
+            except Exception as e:
+                logger.warning("Isaac render failed for submit, using gray fallback: %s", e)
+                n = len(getattr(self, "_dataset_images_cache", [None] * 5))
+                isaac_images = [Image.new("RGB", self.config.image_size, (50, 50, 50)) for _ in range(n)]
+
+            cam_labels = ["Top", "Front", "Side", "Iso", "Iso2"]
+            label_lines = [
+                f"{cam_labels[i] if i < len(cam_labels) else f'Cam{i}'}: {self.config.image_placeholder}"
+                for i in range(len(isaac_images))
+            ]
+            img_section = "\n".join(label_lines)
+            obs_text = f"[System]: Episode submitted.\n{img_section}"
 
             reward += step_reward
-            done = True  # Submit always ends the episode
-            metrics["turn_metrics"]["action_is_effective"] = True
-
-            if step_info.get("success", False):
+            if step_success:
                 reward += self.config.success_reward
-                metrics["traj_metrics"]["success"] = True
+            done = True
+            metrics["turn_metrics"]["action_is_effective"] = True
+            metrics["traj_metrics"]["success"] = step_success
 
-            cam0_images = [all_images[0]] if len(all_images) > 0 else []
-            obs_text = action_template(
-                action_result=response["obs_str"],
-                img_placeholder=self.config.image_placeholder,
-            )
-            obs = self._make_multi_image_obs(
-                obs_text, cam0_images, action_str=action_str
-            )
-            info.update(step_info)
+            obs = self._make_multi_image_obs(obs_text, isaac_images, action_str=action_str)
+            info.update({"success": step_success, "timeout": False})
 
         else:
             # ----------------------------------------------------------
-            # Parse failure — show error with camera 0 view
+            # Parse failure — use blank image, no server call
             # ----------------------------------------------------------
-            server = await self._get_server()
-            all_images = await server.render.remote(self._sub_env_id)
-            cam0_images = [all_images[0]] if len(all_images) > 0 else []
-
+            cam0_images = [Image.new("RGB", self.config.image_size, (30, 30, 30))]
             msg = (
-                "Could not parse your action. Valid formats:\n"
-                f'  Query cameras: {{"query": [0, 1]}}  (IDs 0..{self.config.n_cameras - 1})\n'
+                'Could not parse your action. Valid formats:\n'
                 '  Place a brick: {"x": 2, "y": 3, "z": 0}\n'
-                "  Submit: submit"
+                '  Submit: submit'
             )
             obs = self._make_multi_image_obs(
                 action_template(
@@ -358,7 +366,7 @@ class IsaacManagedEnv(GymImageEnv):
         self.trajectory.append({
             "step_idx": self.steps_taken,
             "coordinate": coordinate,
-            "query_cameras": query_cameras,
+            "query_cameras": None,  # query removed
             "is_submit": is_submit,
             "reward": reward,
             "success": info["success"],
@@ -384,7 +392,67 @@ class IsaacManagedEnv(GymImageEnv):
             self._sub_env_id = None
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Dataset helpers
+    # ------------------------------------------------------------------
+
+    def _scan_dataset(self, root: str) -> List[Dict]:
+        """Scan the dataset directory and return a sorted list of valid entries.
+
+        Each entry is a dict with keys:
+        - ``dir``:  ``pathlib.Path`` to the snapshot sub-directory
+        - ``stem``: directory name string (e.g. ``"0001"``)
+        - ``imgs``: list of 5 ``Path`` objects (top/front/side/iso/iso2)
+        - ``json``: ``Path`` to the ``_data.json`` file
+        """
+        entries: List[Dict] = []
+        root_path = Path(root)
+        if not root_path.exists():
+            logger.warning("Dataset root does not exist: %s", root)
+            return entries
+        img_suffixes = ["_top", "_front", "_side", "_iso", "_iso2"]
+        for subdir in sorted(root_path.iterdir()):
+            if not subdir.is_dir():
+                continue
+            stem = subdir.name  # e.g. "0001"
+            imgs = [subdir / f"{stem}{s}.png" for s in img_suffixes]
+            json_path = subdir / f"{stem}_data.json"
+            if all(p.exists() for p in imgs) and json_path.exists():
+                entries.append({"dir": subdir, "stem": stem, "imgs": imgs, "json": json_path})
+        return entries
+
+    def _load_dataset_images(self, seed: int) -> List["Image.Image"]:
+        """Return the 5 pre-rendered images for a dataset entry chosen by *seed*.
+
+        Images are in order: top, front, side, iso, iso2 — matching the camera
+        index ordering used by the rest of the environment.
+        """
+        if not self._dataset_entries:
+            return []
+        entry = self._dataset_entries[seed % len(self._dataset_entries)]
+        images: List["Image.Image"] = []
+        for img_path in entry["imgs"]:
+            try:
+                images.append(Image.open(img_path).convert("RGB"))
+            except Exception as exc:
+                logger.warning("Failed to load image %s: %s", img_path, exc)
+                images.append(Image.new("RGB", self.config.image_size, (0, 0, 0)))
+        return images
+
+    def _load_target_description(self, seed: int) -> str:
+        """Return a neutral task instruction.
+
+        The VLM must infer the target configuration from the provided images
+        alone.  Actual block coordinates are intentionally withheld to preserve
+        the spatial-reasoning challenge.
+        """
+        return (
+            "Your task is to replicate the block structure shown in the image. "
+            "Observe the target configuration carefully and place blocks one by one "
+            "to reproduce it."
+        )
+
+    # ------------------------------------------------------------------
+    # Prompt / observation helpers
     # ------------------------------------------------------------------
 
     def _build_system_prompt(self) -> str:

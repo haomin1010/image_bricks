@@ -360,8 +360,8 @@ def main() -> None:
 
                 env = os.environ.copy()
                 # Server will auto-connect to the same Ray cluster
-                # Run Isaac on GPU0 (exclusive for Isaac)
-                env["CUDA_VISIBLE_DEVICES"] = "0"
+                # Run Isaac on GPU7 (exclusive for Isaac, as GPU0 is full)
+                env["CUDA_VISIBLE_DEVICES"] = "7"
                 
                 print(f">>> Starting Isaac server in foreground (logs will print here): {' '.join(cmd)}")
                 # Start Isaac server as a child process that inherits stdout/stderr

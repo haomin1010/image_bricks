@@ -355,7 +355,10 @@ class StackingStateMachine:
                     gripper_cmd = 1.0
 
             state_i = int(self.state[i].item())
-            if state_i >= 0 and state_i not in [self.GRASP, self.RELEASE] and self.state_timer[i] > 150:
+            # GRASP/RELEASE: 300-step timeout (15s) to allow gripper to act.
+            # All other movement states: 150-step timeout (7.5s).
+            _thresh = 300 if state_i in [self.GRASP, self.RELEASE] else 150
+            if state_i >= 0 and self.state_timer[i] > _thresh:
                 print(f"[Env {i}] !!! STATE {state_i} TIMEOUT !!! Forcing transition. (server.py)")
                 if state_i == self.APPROACH_CUBE:
                     self.state[i] = self.DESCEND_CUBE
