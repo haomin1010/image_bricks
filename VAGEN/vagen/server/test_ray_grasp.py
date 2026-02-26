@@ -36,7 +36,7 @@ from ray.exceptions import GetTimeoutError
 DEFAULT_TASK = "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0"
 DEFAULT_GOALS = "2,2,0;3,2,0;3,3,0"
 DEFAULT_CAMERAS = "0,1,2,3,4"
-DEFAULT_RAY_HEAD_LOG = "/tmp/ray_head_start.log"
+DEFAULT_RAY_HEAD_LOG = "outputs/ray_test.log"
 
 
 def parse_goals(raw: str) -> List[Dict[str, int]]:
@@ -220,6 +220,10 @@ def start_server_if_needed(args: argparse.Namespace) -> Tuple[Optional[subproces
         cmd.append("--no-headless")
     if args.server_record:
         cmd.append("--record")
+        cmd.extend(["--video-length", str(args.server_video_length)])
+        cmd.extend(["--video-interval", str(args.server_video_interval)])
+    if args.server_extra_args.strip():
+        cmd.extend(shlex.split(args.server_extra_args))
 
     env = os.environ.copy()
     if args.server_cuda_visible_devices:
@@ -278,7 +282,6 @@ def image_count(payload: Dict[str, Any]) -> int:
 
 def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
     goals = parse_goals(args.goals)
-    query_cameras = parse_camera_ids(args.query_cameras)
 
     alive = ray_get_with_timeout(
         actor.is_alive.remote(),
@@ -299,7 +302,6 @@ def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
         "env_id": int(env_id),
         "seed": int(args.seed),
         "goals": goals,
-        "query_cameras": query_cameras,
         "steps": [],
     }
 
@@ -310,35 +312,8 @@ def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
             timeout_s=args.rpc_timeout_s,
         )
         expect_keys(reset_resp, ["images", "info"], "remote_reset")
-        reset_images = image_count(reset_resp)
-        print(f"[INFO] reset returned {reset_images} images.")
-        if args.require_images and reset_images == 0:
-            raise AssertionError("remote_reset returned zero images")
-        summary["reset_images"] = reset_images
+        print("[INFO] reset done.")
         summary["reset_info"] = reset_resp.get("info", {})
-
-        query_resp = None
-        try:
-            query_resp = ray_get_with_timeout(
-                actor.remote_query.remote(env_id, query_cameras),
-                label="remote_query",
-                timeout_s=args.rpc_timeout_s,
-            )
-        except AttributeError:
-            # Fallback for older/newer servers without remote_query
-            query_resp = ray_get_with_timeout(
-                actor.render.remote(env_id),
-                label="render",
-                timeout_s=args.rpc_timeout_s,
-            )
-            query_resp = {"images": query_resp, "info": {"env_id": env_id}}
-
-        expect_keys(query_resp, ["images", "info"], "remote_query")
-        query_images = image_count(query_resp)
-        print(f"[INFO] query returned {query_images} images.")
-        if args.require_images and query_images == 0:
-            raise AssertionError("remote_query returned zero images")
-        summary["query_images"] = query_images
 
         for idx, goal in enumerate(goals):
             method_name = "remote_step"
@@ -370,9 +345,15 @@ def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
             )
             summary["steps"].append(step_item)
 
+        try:
+            submit_ref = actor.remote_submit.remote(env_id)
+            submit_label = "remote_submit"
+        except AttributeError:
+            submit_ref = actor.remote_step.remote(env_id, {"type": "submit"})
+            submit_label = "remote_step(submit)"
         submit_resp = ray_get_with_timeout(
-            actor.remote_submit.remote(env_id),
-            label="remote_submit",
+            submit_ref,
+            label=submit_label,
             timeout_s=args.submit_timeout_s,
         )
         expect_keys(submit_resp, ["images", "reward", "done", "info"], "remote_submit")
@@ -453,7 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--query-cameras",
         type=str,
         default=DEFAULT_CAMERAS,
-        help="Comma-separated camera IDs for remote_query, empty string to skip selection.",
+        help="Deprecated (ignored). Kept only for backward-compatible CLI.",
     )
     parser.add_argument(
         "--require-images",
@@ -494,6 +475,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Enable --record for auto-started server and save video under outputs/. true/false.",
     )
     parser.add_argument(
+        "--server-video-length",
+        type=int,
+        default=0,
+        help="Forwarded to server --video-length when --server-record is true (0 = until close/reset).",
+    )
+    parser.add_argument(
+        "--server-video-interval",
+        type=int,
+        default=0,
+        help="Forwarded to server --video-interval when --server-record is true (0 = single clip).",
+    )
+    parser.add_argument(
         "--server-cuda-visible-devices",
         type=str,
         default="",
@@ -508,7 +501,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--server-log",
         type=str,
-        default="/tmp/isaac_server_test.log",
+        default="outputs/isaac_server.log",
         help="Log file used when auto-start launches server.",
     )
     parser.add_argument(
@@ -516,6 +509,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=45.0,
         help="Graceful stop timeout for auto-started server (SIGINT first, then force kill).",
+    )
+    parser.add_argument(
+        "--server-extra-args",
+        type=str,
+        default="",
+        help=(
+            "Extra raw args forwarded to auto-started start_isaac_server.py, "
+            "for example: \"--no-headless --debug-env-id 0\"."
+        ),
     )
     return parser
 

@@ -105,8 +105,10 @@ class StackingStateMachine:
         self._last_obs = obs
 
     def physics_suction_cb(self, dt):
-        policy_obs = None
-        policy_obs = self._last_obs.get("policy")
+        if not isinstance(self._last_obs, dict):
+            return
+        if "policy" not in self._last_obs:
+            return
         self.apply_magic_suction(self._last_obs)
 
 
@@ -115,6 +117,8 @@ class StackingStateMachine:
         policy_obs = obs.get("policy", {})
         ee_pos = policy_obs.get("eef_pos")
         ee_quat = policy_obs.get("eef_quat")
+        if ee_pos is None:
+            return
 
         # 1) Attach condition: same logic as stack_cube_sm.py (local-space distance)
         grabbing_mask = (self.state == self.GRASP) & (self.attached_cube_idx == -1)
