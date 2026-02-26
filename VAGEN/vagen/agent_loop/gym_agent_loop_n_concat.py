@@ -10,7 +10,21 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from PIL import Image
-from .agent_loop_no_concat import AgentLoopBase, AgentLoopOutput, register
+from .agent_loop_no_concat import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics, register
+
+# Verl's pipeline expects AgentLoopOutput with metrics as dict; use verl's type for return
+try:
+    from verl.experimental.agent_loop.agent_loop import AgentLoopOutput as VerlAgentLoopOutput
+except ImportError:
+    VerlAgentLoopOutput = None
+
+def _metrics_to_dict(m) -> Dict[str, Any]:
+    """Convert metrics to dict for verl compatibility (verl expects dict, not AgentLoopMetrics)."""
+    if isinstance(m, dict):
+        return m
+    if hasattr(m, "model_dump"):
+        return m.model_dump()
+    return dict(m) if m else {}
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
 from ..envs.gym_image_env import GymImageEnv
@@ -193,7 +207,20 @@ class GymAgentLoop(AgentLoopBase):
         if len(outputs) == 0:
             raise RuntimeError("gym_agent_loop_n_concat: no outputs produced")
         if len(outputs) == 1:
-            return outputs[0]
+            o = outputs[0]
+            if VerlAgentLoopOutput is not None:
+                return VerlAgentLoopOutput(
+                    prompt_ids=o.prompt_ids,
+                    response_ids=o.response_ids,
+                    response_mask=o.response_mask,
+                    response_logprobs=o.response_logprobs,
+                    multi_modal_data=o.multi_modal_data,
+                    reward_score=o.reward_score,
+                    num_turns=getattr(o, "num_turns", 0),
+                    metrics=_metrics_to_dict(o.metrics),
+                    extra_fields=o.extra_fields or {},
+                )
+            return o
         # Merge: prompt=first.prompt, response=resp_0 + prompt_1 + resp_1 + ... (interleaved, prompt parts masked 0)
         merged_prompt_ids = outputs[0].prompt_ids
         merged_response_ids: List[int] = []
@@ -217,7 +244,7 @@ class GymAgentLoop(AgentLoopBase):
                     merged_response_logprobs.extend([0.0] * len(next_o.prompt_ids))
         last = outputs[-1]
         merged_mm = {"image": merged_images} if merged_images else (last.multi_modal_data or {})
-        return AgentLoopOutput(
+        out = AgentLoopOutput(
             prompt_ids=merged_prompt_ids[-self.prompt_length:] if len(merged_prompt_ids) > self.prompt_length else merged_prompt_ids,
             response_ids=merged_response_ids[: self.response_length],
             response_mask=merged_response_mask[: self.response_length],
@@ -228,6 +255,19 @@ class GymAgentLoop(AgentLoopBase):
             metrics=last.metrics,
             extra_fields=last.extra_fields or {},
         )
+        if VerlAgentLoopOutput is not None:
+            return VerlAgentLoopOutput(
+                prompt_ids=out.prompt_ids,
+                response_ids=out.response_ids,
+                response_mask=out.response_mask,
+                response_logprobs=out.response_logprobs,
+                multi_modal_data=out.multi_modal_data,
+                reward_score=out.reward_score,
+                num_turns=out.num_turns,
+                metrics=_metrics_to_dict(out.metrics),
+                extra_fields=out.extra_fields or {},
+            )
+        return out
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: Dict[str, Any]) -> AgentState:
         """Encode windowed messages (sys + recent history + current user) into turn_prompt_ids."""
