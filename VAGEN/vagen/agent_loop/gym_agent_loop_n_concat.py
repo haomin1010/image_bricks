@@ -51,7 +51,7 @@ from .gym_agent_loop import convert_obs_to_content, extract_success, _flatten_te
 # Number of recent turns to keep in context (including the current turn).
 # e.g., RECENT_N_TURNS=3 means: sys_msg + up to 2 historical (user, assistant) pairs + current user_msg.
 # Setting to 1 is equivalent to no-concat mode (no history at all).
-RECENT_N_TURNS = 3
+RECENT_N_TURNS = 1
 
 
 class AgentState(Enum):
@@ -248,7 +248,9 @@ class GymAgentLoop(AgentLoopBase):
                     extra_fields=o.extra_fields or {},
                 )
             return o
-        # Merge: prompt=first.prompt, response=resp_0 + prompt_1 + resp_1 + ... (interleaved, prompt parts masked 0)
+        # Merge: prompt=first.prompt, response=resp_0 + resp_1 + ... (NO interleaving of prompt segments).
+        # Interleaving prompt_i (which contain image placeholders) into response causes Qwen2-VL to expand
+        # those placeholders, producing llm_positions shape mismatch vs attention_mask (log evidence: 4540 vs 4554).
         merged_prompt_ids = outputs[0].prompt_ids
         merged_response_ids: List[int] = []
         merged_response_mask: List[int] = []
@@ -263,14 +265,10 @@ class GymAgentLoop(AgentLoopBase):
                 merged_response_logprobs.extend(o.response_logprobs)
             if o.multi_modal_data and "image" in o.multi_modal_data:
                 merged_images.extend(o.multi_modal_data["image"])
-            if j < len(outputs) - 1:
-                next_o = outputs[j + 1]
-                merged_response_ids.extend(next_o.prompt_ids)
-                merged_response_mask.extend([0] * len(next_o.prompt_ids))
-                if merged_response_logprobs is not None and next_o.response_logprobs is not None:
-                    merged_response_logprobs.extend([0.0] * len(next_o.prompt_ids))
         last = outputs[-1]
-        merged_mm = {"image": merged_images} if merged_images else (last.multi_modal_data or {})
+        # Use first turn's images only - prompt is from first turn, response has no image placeholders
+        first_mm = outputs[0].multi_modal_data or {}
+        merged_mm = first_mm if first_mm else ({"image": merged_images} if merged_images else {})
         out = AgentLoopOutput(
             prompt_ids=merged_prompt_ids[-self.prompt_length:] if len(merged_prompt_ids) > self.prompt_length else merged_prompt_ids,
             response_ids=merged_response_ids[: self.response_length],
