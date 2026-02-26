@@ -25,6 +25,18 @@ def _metrics_to_dict(m) -> Dict[str, Any]:
     if hasattr(m, "model_dump"):
         return m.model_dump()
     return dict(m) if m else {}
+
+# #region agent log
+import json
+import time
+_DEBUG_LOG_PATH = "/home/user/workspace/image_bricks/.cursor/debug.log"
+def _dbg(hid: str, loc: str, msg: str, data: dict):
+    try:
+        with open(_DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps({"hypothesisId": hid, "location": loc, "message": msg, "data": data, "timestamp": int(time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+# #endregion
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
 from ..envs.gym_image_env import GymImageEnv
@@ -119,6 +131,9 @@ class GymAgentLoop(AgentLoopBase):
         cls.apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
         cls.response_length = config.actor_rollout_ref.rollout.response_length
+        # #region agent log
+        _dbg("H3,H5", "gym_agent_loop_n_concat:init_class", "config limits", {"prompt_length": cls.prompt_length, "response_length": cls.response_length})
+        # #endregion
         cls.system_prompt = tokenizer.apply_chat_template(
             [{}], add_generation_prompt=False, tokenize=True, **cls.apply_chat_template_kwargs
         )
@@ -208,6 +223,18 @@ class GymAgentLoop(AgentLoopBase):
             raise RuntimeError("gym_agent_loop_n_concat: no outputs produced")
         if len(outputs) == 1:
             o = outputs[0]
+            # #region agent log
+            _dbg("H2,H3,H4", "gym_agent_loop_n_concat:return_single", "final output to verl", {
+                "prompt_ids_len": len(o.prompt_ids),
+                "response_ids_len": len(o.response_ids),
+                "response_mask_len": len(o.response_mask),
+                "total_seq_len": len(o.prompt_ids) + len(o.response_ids),
+                "mask_sum": sum(o.response_mask),
+                "num_images": len(o.multi_modal_data.get("image", [])) if o.multi_modal_data else 0,
+                "prompt_length": self.prompt_length,
+                "response_length": self.response_length,
+            })
+            # #endregion
             if VerlAgentLoopOutput is not None:
                 return VerlAgentLoopOutput(
                     prompt_ids=o.prompt_ids,
@@ -255,6 +282,19 @@ class GymAgentLoop(AgentLoopBase):
             metrics=last.metrics,
             extra_fields=last.extra_fields or {},
         )
+        # #region agent log
+        _dbg("H2,H3,H4", "gym_agent_loop_n_concat:return_merged", "merged output to verl", {
+            "prompt_ids_len": len(out.prompt_ids),
+            "response_ids_len": len(out.response_ids),
+            "response_mask_len": len(out.response_mask),
+            "total_seq_len": len(out.prompt_ids) + len(out.response_ids),
+            "mask_sum": sum(out.response_mask),
+            "num_images": len(out.multi_modal_data.get("image", [])) if out.multi_modal_data else 0,
+            "num_outputs_merged": len(outputs),
+            "prompt_length": self.prompt_length,
+            "response_length": self.response_length,
+        })
+        # #endregion
         if VerlAgentLoopOutput is not None:
             return VerlAgentLoopOutput(
                 prompt_ids=out.prompt_ids,
@@ -388,6 +428,20 @@ class GymAgentLoop(AgentLoopBase):
         response_ids = agent_data.turn_prompt_ids[-resp_len:] if resp_len else []
         prompt_ids = agent_data.turn_prompt_ids[: len(agent_data.turn_prompt_ids) - resp_len]
         multi_modal_data = {"image": turn_images} if turn_images else {}
+        # #region agent log
+        _dbg("H1", "gym_agent_loop_n_concat:_handle_env_state", "pre-truncation lengths", {
+            "turn_prompt_ids_len": len(agent_data.turn_prompt_ids),
+            "resp_len": resp_len,
+            "prompt_part_len": len(prompt_ids),
+            "response_part_len": len(response_ids),
+            "response_mask_len": len(agent_data.turn_response_mask),
+            "prompt_length_limit": self.prompt_length,
+            "response_length_limit": self.response_length,
+            "prompt_truncated": len(prompt_ids) > self.prompt_length,
+            "response_truncated": len(response_ids) > self.response_length,
+            "num_images": len(turn_images) if turn_images else 0,
+        })
+        # #endregion
         output = AgentLoopOutput(
             prompt_ids=prompt_ids[-self.prompt_length:],
             response_ids=response_ids[: self.response_length],
