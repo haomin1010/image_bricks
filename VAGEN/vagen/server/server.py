@@ -106,18 +106,11 @@ class StackingStateMachine:
         self._cb_error_logged = False
 
     def physics_suction_cb(self, dt):
-        if self._last_obs is None:
-            if not self._cb_error_logged:
-                print("[WARN] physics_suction_cb called before _last_obs is set; skipping suction update.")
-                self._cb_error_logged = True
+        if not isinstance(self._last_obs, dict):
             return
-        try:
-            self.apply_magic_suction(self._last_obs)
-        except Exception as e:
-            if not self._cb_error_logged:
-                print(f"[WARN] physics_suction_cb encountered error: {e}")
-                self._cb_error_logged = True
+        if "policy" not in self._last_obs:
             return
+        self.apply_magic_suction(self._last_obs)
 
 
     def apply_magic_suction(self, obs):
@@ -125,6 +118,8 @@ class StackingStateMachine:
         policy_obs = obs.get("policy", {})
         ee_pos = policy_obs.get("eef_pos")
         ee_quat = policy_obs.get("eef_quat")
+        if ee_pos is None:
+            return
 
         # 1) Attach condition: same logic as stack_cube_sm.py (local-space distance)
         grabbing_mask = (self.state == self.GRASP) & (self.attached_cube_idx == -1)

@@ -11,6 +11,8 @@ import logging
 import time
 from typing import Dict, Any, List
 import asyncio
+import signal
+from ray.exceptions import GetTimeoutError
 
 # Map ISAAC_NUCLEUS_DIR / ISAACLAB_NUCLEUS_DIR to local mirrored assets.
 os.environ.setdefault("ISAACLAB_ASSET_ROOT", "/data1/lhm/image_bricks/assets")
@@ -119,6 +121,10 @@ class IsaacEnvServerProxy:
             "obs_str": "Action executed",
             "info": info,
         }
+
+    async def remote_submit(self, env_id):
+        """Backward-compatible submit API."""
+        return await self.remote_step(env_id, {"type": "submit"})
     
     async def render(self, env_id):
         """Render current state of a specific environment slot."""
@@ -162,7 +168,19 @@ def main():
     # Allow enabling/disabling headless mode via CLI
     parser.add_argument("--headless", dest="headless", action="store_true", help="Run Isaac in headless mode (no GUI).")
     parser.add_argument("--no-headless", dest="headless", action="store_false", help="Run Isaac with GUI (disable headless).")
-    parser.add_argument("--record", action="store_true", default=False, help="Record a video of env 0 and save to outputs/")
+    parser.add_argument("--record", action="store_true", default=False, help="Record video using gymnasium RecordVideo.")
+    parser.add_argument(
+        "--video-length",
+        type=int,
+        default=0,
+        help="Recorded clip length in simulation steps (0 = keep recording until close/reset).",
+    )
+    parser.add_argument(
+        "--video-interval",
+        type=int,
+        default=0,
+        help="Start a new clip every N simulation steps (0 = start once at step 0).",
+    )
     args = parser.parse_args()
     
     # Connect to Ray cluster
@@ -199,10 +217,7 @@ def main():
     # Import Isaac AFTER Ray and ENV setup
     from isaaclab.app import AppLauncher
     import torch
-    import numpy as np
     from PIL import Image
-    import imageio
-    _IMAGEIO_AVAILABLE = True
     
     config = {
         "num_envs": args.num_envs,
@@ -228,7 +243,6 @@ def main():
     simulation_app = app_launcher.app
     print("Isaac Simulation App launched successfully")
     # Debug: print camera/render settings
-    shutdown_reason = "normal exit"
     try:
         import carb
         settings_iface = carb.settings.get_settings()
@@ -306,7 +320,62 @@ def main():
     except Exception as e:
         print(f"[DEBUG]: Failed to enumerate camera sensors: {e}")
     
-    env = gym.make(config["task"], cfg=env_cfg)
+    # Camera names aligned to batch_gen.py and server.cfg
+    cam_names = ["camera", "camera_front", "camera_side", "camera_iso", "camera_iso2"]
+
+    env = gym.make(config["task"], cfg=env_cfg, render_mode="rgb_array" if args.record else None)
+    record_single_clip_mode = False
+    video_prefix = ""
+    record_clip_index = 0
+    if args.record:
+        out_dir = os.path.join(os.getcwd(), "outputs", "videos")
+        os.makedirs(out_dir, exist_ok=True)
+        video_interval = int(args.video_interval)
+        video_length = int(args.video_length)
+        if video_length < 0:
+            video_length = 0
+        video_prefix = f"isaac_record_{args.task.replace('/', '_')}_{int(time.time())}"
+        video_run_dir = os.path.join(out_dir, video_prefix)
+        os.makedirs(video_run_dir, exist_ok=True)
+        if video_interval <= 0:
+            # Disable automatic trigger and start recording manually on reset commands.
+            step_trigger = lambda step: False
+            record_single_clip_mode = True
+            trigger_desc = "single-clip(manual-on-reset)"
+        else:
+            step_trigger = lambda step: step % video_interval == 0
+            trigger_desc = f"periodic(every={video_interval})"
+        video_kwargs = {
+            "video_folder": video_run_dir,
+            "step_trigger": step_trigger,
+            "video_length": video_length,
+            "name_prefix": video_prefix,
+            "disable_logger": True,
+        }
+        env = gym.wrappers.RecordVideo(env, **video_kwargs)
+        print(
+            "[INFO]: RecordVideo enabled "
+            f"trigger={trigger_desc} video_length={video_length} output={video_run_dir}"
+        )
+
+    def _start_manual_recording(reason: str):
+        nonlocal record_clip_index
+        if not (args.record and record_single_clip_mode):
+            return
+        if not hasattr(env, "start_recording"):
+            return
+        if bool(getattr(env, "recording", False)):
+            return
+        clip_name = f"{video_prefix}-manual-{record_clip_index}"
+        record_clip_index += 1
+        try:
+            env.start_recording(clip_name)
+            # Capture one frame immediately so the clip is never empty if stopped quickly.
+            env._capture_frame()
+            print(f"[INFO]: Manual RecordVideo start '{clip_name}' reason={reason}")
+        except Exception as e:
+            print(f"[WARN]: Failed to start manual recording ({reason}): {e}")
+
     print(f"Environment '{config['task']}' created")
     print(f"Action space: {env.action_space}")
     grid_origin = [0.5, 0.0, 0.001]
@@ -337,6 +406,7 @@ def main():
     
     # Initial reset
     obs, _ = env.reset()
+    sm.set_last_obs(obs)
     print("Environment reset complete")
     
     # 彻底解决启动时“向外甩动”的问题：
@@ -360,41 +430,29 @@ def main():
     print("IsaacEnvServer proxy registered to Ray cluster")
     ray.get(proxy_actor.is_alive.remote())  # Ensure it's ready
     
-    # Camera names aligned to batch_gen.py and server.cfg
-    cam_names = ["camera", "camera_front", "camera_side", "camera_iso", "camera_iso2"]
-
     # Keep simulation running
     print("Isaac server entering main loop (Ctrl+C to exit)...")
+    shutdown_requested = False
+    shutdown_reason = "normal exit"
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _request_shutdown(signum, _frame):
+        nonlocal shutdown_requested, shutdown_reason
+        if not shutdown_requested:
+            shutdown_requested = True
+            shutdown_reason = f"signal {signum}"
+            print(f"Received signal {signum}, requesting graceful shutdown...")
+
+    signal.signal(signal.SIGINT, _request_shutdown)
+    signal.signal(signal.SIGTERM, _request_shutdown)
+
     try:
         frame_count = 0
-        # 将初始索引设为 -1，确保第一个方块 (Task 0) 也能触发瞬移逻辑
-        # 使用 Python 列表以便主循环中快速比较并日志化变化
-        # Streaming writer (prefer) and also save PNG frames for accurate final encoding
-        writer = None
-        frames_dir = None
-        frame_idx = 0
-        frame_timestamps = []
-        if args.record:
-            out_dir = os.path.join(os.getcwd(), "outputs")
-            os.makedirs(out_dir, exist_ok=True)
-
-            ts_start = int(time.time())
-            filename = f"isaac_record_{args.task.replace('/', '_')}_{ts_start}.mp4"
-            out_path = os.path.join(out_dir, filename)
-            if _IMAGEIO_AVAILABLE:
-                writer = imageio.get_writer(out_path, fps=20, codec='libx264')
-                print(f"Recording enabled - streaming to {out_path}")
-
-            # Always create a frames dir so we can re-encode with measured FPS at shutdown
-            frames_dir = os.path.join(out_dir, f"record_frames_{ts_start}")
-            os.makedirs(frames_dir, exist_ok=True)
-            print(f"Recording: saving frames to {frames_dir}")
-            ts_capture_start = time.time()
-
         step_count = 0
         prev_task_indices = torch.full((env.unwrapped.num_envs,), -1, dtype=torch.long, device=env.unwrapped.device)
     
-        while simulation_app.is_running():
+        while simulation_app.is_running() and not shutdown_requested:
             # Update simulation
             simulation_app.update()
             
@@ -437,18 +495,22 @@ def main():
                     del step_initial_task_idx[env_id]
             
             # Check for commands from Proxy (Trainer)
-            commands = ray.get(proxy_actor.get_pending_commands.remote())
+            try:
+                commands = ray.get(proxy_actor.get_pending_commands.remote(), timeout=0.2)
+            except GetTimeoutError:
+                commands = []
             for env_id, cmd_type, data in commands:
                 if cmd_type == "reset":
                     seed = data
                     # Try passing seed to env.reset; support common option keys
                     reset_options = {"env_ids": [env_id]}
                     reset_options["seed"] = int(seed)
-                    env.reset(options=reset_options)
+                    obs, _ = env.reset(options=reset_options)
+                    sm.set_last_obs(obs)
 
                     # Reset state machine for this environment
                     sm.reset_envs([env_id])
-                    init_ee_pos = obs['policy']['eef_pos']
+                    _start_manual_recording(reason=f"remote_reset_env_{env_id}")
 
                 elif cmd_type == "step":
                     goal = data
@@ -578,24 +640,6 @@ def main():
 
                     proxy_actor.update_state.remote(env_id, img_list)
 
-                    # If recording enabled, capture env 0 frames by concatenating cameras
-                    if args.record and env_id == 0:
-                        widths, heights = zip(*(i.size for i in img_list))
-                        total_w = sum(widths)
-                        max_h = max(heights)
-                        concat = Image.new('RGB', (total_w, max_h))
-                        x_off = 0
-                        for im in img_list:
-                            concat.paste(im, (x_off, 0))
-                            x_off += im.size[0]
-
-                        if frames_dir is not None:
-                            frame_file = os.path.join(frames_dir, f"frame_{frame_idx:08d}.png")
-                            concat.save(frame_file)
-                            frame_timestamps.append(time.time())
-                            frame_idx += 1
-                            writer.append_data(np.array(concat))
-
             frame_count += 1
             # Drive state machine so proxy delivers actions when targets are set
             actions = sm.compute_action(obs)
@@ -681,31 +725,18 @@ def main():
         traceback.print_exc()
     finally:
         print(f"Shutting down Isaac server... reason={shutdown_reason}")
-        # Close streaming writer if opened
-        if writer is not None:
-            writer.close()
-            print(f"Saved streaming recording to {out_path}")
-
-        # If we saved PNG frames, re-encode them into a single MP4 using measured FPS
-        if frames_dir is not None and _IMAGEIO_AVAILABLE and frame_idx > 0:
-            ts_end = time.time()
-            elapsed = max(1e-3, ts_end - ts_capture_start)
-            measured_fps = float(frame_idx) / elapsed
-            final_filename = f"isaac_record_{args.task.replace('/', '_')}_{int(ts_capture_start)}.mp4"
-            final_out_path = os.path.join(out_dir, final_filename)
-            print(f"Encoding final MP4 at measured FPS={measured_fps:.2f} to {final_out_path}")
-            writer2 = imageio.get_writer(final_out_path, fps=measured_fps, codec='libx264')
-            for i in range(frame_idx):
-                frame_file = os.path.join(frames_dir, f"frame_{i:08d}.png")
-                img = imageio.imread(frame_file)
-                writer2.append_data(img)
-            writer2.close()
-            print(f"Saved recording to {final_out_path}")
-        elif frames_dir is not None and frame_idx > 0:
-            print(f"Frames saved to {frames_dir}. Install imageio[ffmpeg] to auto-encode MP4.")
-
-        env.close()
-        simulation_app.close()
+        # IMPORTANT: close env (RecordVideo flush) before shutting down SimulationApp.
+        try:
+            env.close()
+            print("Environment closed (recording finalized if enabled).")
+        except Exception as e:
+            print(f"[WARN] env.close() failed during shutdown: {e}")
+        try:
+            simulation_app.close()
+        except Exception as e:
+            print(f"[WARN] simulation_app.close() failed during shutdown: {e}")
+        signal.signal(signal.SIGINT, prev_sigint)
+        signal.signal(signal.SIGTERM, prev_sigterm)
         print("Isaac server shutdown complete")
 
 
