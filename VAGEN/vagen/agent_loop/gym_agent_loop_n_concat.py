@@ -39,7 +39,7 @@ from .gym_agent_loop import convert_obs_to_content, extract_success, _flatten_te
 # Number of recent turns to keep in context (including the current turn).
 # e.g., RECENT_N_TURNS=3 means: sys_msg + up to 2 historical (user, assistant) pairs + current user_msg.
 # Setting to 1 is equivalent to no-concat mode (no history at all).
-RECENT_N_TURNS = 1
+RECENT_N_TURNS = 3
 
 
 class AgentState(Enum):

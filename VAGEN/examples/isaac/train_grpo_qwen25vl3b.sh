@@ -39,7 +39,7 @@ EXPERIMENT_DIR=${BASEDIR}/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
 SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
 DATASET_TRAIN=${SCRIPTDIR}/train_isaac_vision.yaml
 DATASET_VAL=${SCRIPTDIR}/val_isaac_vision.yaml
-agent_loop_config_path=${BASEDIR}/vagen/configs/agent.yaml
+agent_loop_config_path=${BASEDIR}/vagen/configs/agent_n_concat.yaml
 REF_MODEL_PATH=/data1/lhm/image_bricks/Models/Qwen2.5-VL-3B-Instruct
 mkdir -p ${EXPERIMENT_DIR}
 
@@ -50,8 +50,8 @@ PYTHONUNBUFFERED=1 python3 -m vagen.main_ppo \
     data.train_files=${DATASET_TRAIN} \
     data.val_files=${DATASET_VAL} \
     data.train_batch_size=3 \
-    data.max_prompt_length=4096 \
-    data.max_response_length=4096 \
+    data.max_prompt_length=12288 \
+    data.max_response_length=12288 \
     algorithm.adv_estimator=grpo \
     algorithm.kl_ctrl.kl_coef=0.0 \
     actor_rollout_ref.model.path=${REF_MODEL_PATH} \
