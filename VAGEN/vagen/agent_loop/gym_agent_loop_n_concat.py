@@ -186,7 +186,48 @@ class GymAgentLoop(AgentLoopBase):
 
         # Close env after loop
         await env.close()
-        return agent_data.outputs
+
+        # Verl's AgentLoopManager expects a single AgentLoopOutput, not a list.
+        # Merge multiple turn outputs into one (concat style) when needed.
+        outputs = agent_data.outputs
+        if len(outputs) == 0:
+            raise RuntimeError("gym_agent_loop_n_concat: no outputs produced")
+        if len(outputs) == 1:
+            return outputs[0]
+        # Merge: prompt=first.prompt, response=resp_0 + prompt_1 + resp_1 + ... (interleaved, prompt parts masked 0)
+        merged_prompt_ids = outputs[0].prompt_ids
+        merged_response_ids: List[int] = []
+        merged_response_mask: List[int] = []
+        merged_response_logprobs: Optional[List[float]] = None
+        merged_images: List[Any] = []
+        for j, o in enumerate(outputs):
+            merged_response_ids.extend(o.response_ids)
+            merged_response_mask.extend(o.response_mask)
+            if o.response_logprobs is not None:
+                if merged_response_logprobs is None:
+                    merged_response_logprobs = []
+                merged_response_logprobs.extend(o.response_logprobs)
+            if o.multi_modal_data and "image" in o.multi_modal_data:
+                merged_images.extend(o.multi_modal_data["image"])
+            if j < len(outputs) - 1:
+                next_o = outputs[j + 1]
+                merged_response_ids.extend(next_o.prompt_ids)
+                merged_response_mask.extend([0] * len(next_o.prompt_ids))
+                if merged_response_logprobs is not None and next_o.response_logprobs is not None:
+                    merged_response_logprobs.extend([0.0] * len(next_o.prompt_ids))
+        last = outputs[-1]
+        merged_mm = {"image": merged_images} if merged_images else (last.multi_modal_data or {})
+        return AgentLoopOutput(
+            prompt_ids=merged_prompt_ids[-self.prompt_length:] if len(merged_prompt_ids) > self.prompt_length else merged_prompt_ids,
+            response_ids=merged_response_ids[: self.response_length],
+            response_mask=merged_response_mask[: self.response_length],
+            multi_modal_data=merged_mm,
+            response_logprobs=merged_response_logprobs[: self.response_length] if merged_response_logprobs else None,
+            reward_score=last.reward_score,
+            num_turns=sum(getattr(o, "num_turns", 1) for o in outputs),
+            metrics=last.metrics,
+            extra_fields=last.extra_fields or {},
+        )
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: Dict[str, Any]) -> AgentState:
         """Encode windowed messages (sys + recent history + current user) into turn_prompt_ids."""
