@@ -167,8 +167,8 @@ class GymAgentLoop(AgentLoopBase):
             env=env,
             response_limit=per_turn_response_limit,
             env_name=kwargs["env_name"],
-            group_idx=kwargs["group_idx"],
-            traj_idx=kwargs["traj_idx"],
+            group_idx=kwargs.get("group_idx", 0),
+            traj_idx=kwargs.get("traj_idx", 0),
         )
 
         # State machine: always GENERATE -> INTERACT, and decide termination inside INTERACT
