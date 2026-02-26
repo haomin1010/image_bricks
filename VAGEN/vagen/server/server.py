@@ -440,43 +440,21 @@ class StackingStateMachine:
 
 def get_stack_cube_env_cfg(task_name, device, num_envs, enable_cameras):
     # create environment
-    env_cfg = parse_env_cfg(task_name, device=device, num_envs=num_envs)
-    # --- 核心修复：只有多环境时才开启 replicate_physics ---
-    env_cfg.scene.num_envs = num_envs
-    env_cfg.scene.replicate_physics = (num_envs > 1)
-    env_cfg.scene.lazy_sensor_update = False 
+    env_cfg = parse_env_cfg(task_name, device=device, num_envs=num_envs) 
     if hasattr(env_cfg, "device"): 
         env_cfg.device = device
-    
-    task_name_lower = task_name.lower()
-    use_gpu_joint_suction = ("ur10" in task_name_lower) and ("suction" in task_name_lower) and str(device).startswith("cuda")
-    if use_gpu_joint_suction:
-        # SurfaceGripper is CPU-only in Isaac Lab. For GPU simulation we disable plugin-side suction
-        # and drive attachment using runtime fixed joints from the state machine.
-        if hasattr(env_cfg.scene, "surface_gripper"):
-            env_cfg.scene.surface_gripper = None
-        if hasattr(env_cfg.actions, "gripper_action"):
-            env_cfg.actions.gripper_action = None
-        if hasattr(env_cfg.observations, "policy") and hasattr(env_cfg.observations.policy, "gripper_pos"):
-            env_cfg.observations.policy.gripper_pos = None
-        if hasattr(env_cfg.observations, "subtask_terms"):
-            if hasattr(env_cfg.observations.subtask_terms, "grasp_1"):
-                env_cfg.observations.subtask_terms.grasp_1 = None
-            if hasattr(env_cfg.observations.subtask_terms, "stack_1"):
-                env_cfg.observations.subtask_terms.stack_1 = None
-            if hasattr(env_cfg.observations.subtask_terms, "grasp_2"):
-                env_cfg.observations.subtask_terms.grasp_2 = None
-            if hasattr(env_cfg.observations.subtask_terms, "stack_2"):
-                env_cfg.observations.subtask_terms.stack_2 = None
-        print("[INFO]: GPU mode detected for UR10 suction. Using joint-based suction (SurfaceGripper disabled).")
-    elif hasattr(env_cfg.scene, "surface_gripper"):
-        print("[INFO]: Keeping scene.surface_gripper enabled (using environment-native suction).")
 
-    # 修复 UR10 Suction 的配置 Bug: 
-    # 原始配置中吸盘在 X 轴，但 IK 控制器却偏置在 Z 轴，导致控制与观测冲突。
-    if "UR10" in task_name and hasattr(env_cfg.actions, "arm_action"):
-        print("[INFO]: Fixing UR10 IK controller offset (Z -> X)...")
-        env_cfg.actions.arm_action.body_offset.pos = (0.159, 0.0, 0.0)
+    if hasattr(env_cfg.scene, "surface_gripper"):
+        print("[INFO]: Switching to GPU Magic Suction. Disabling CPU SurfaceGripper plugin.")
+        env_cfg.scene.surface_gripper = None
+    for action_key in ["gripper_action", "suction_gripper", "gripper"]:
+        if hasattr(env_cfg.actions, action_key):
+            setattr(env_cfg.actions, action_key, None)
+    if hasattr(env_cfg.observations, "policy"):
+        if hasattr(env_cfg.observations.policy, "gripper_pos"):
+            env_cfg.observations.policy.gripper_pos = None
+    if hasattr(env_cfg.observations, "subtask_terms"):
+        env_cfg.observations.subtask_terms = None
 
     # Grid Parameters (match batch_gen.py canonical values)
     grid_origin = [0.5, 0.0, 0.001]
@@ -487,10 +465,6 @@ def get_stack_cube_env_cfg(task_name, device, num_envs, enable_cameras):
     cell_size = 0.055 + line_thickness
     half_width = (grid_size) * cell_size / 2
     
-    # Calculate cell centers for alignment
-    # Cell 0 is at index -2.5, Cell 5 is at index 2.5 (relative to center)
-    def get_cell_center(idx): # idx from 0 to 5
-        return (idx - 2.5) * cell_size
 
     # Spawning Logic: We spawn a fixed number of cubes to handle various tasks
     max_cubes = 8
