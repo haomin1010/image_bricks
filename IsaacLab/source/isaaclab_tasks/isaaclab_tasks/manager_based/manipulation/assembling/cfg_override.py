@@ -106,6 +106,9 @@ class AssemblingCfgOverride:
         arm_action = getattr(getattr(env_cfg, "actions", None), "arm_action", None)
         if isinstance(arm_action, mdp.PinocchioPoseActionCfg):
             arm_action.joint_names = list(arm_joint_names)
+            ee_body_name = os.getenv("VAGEN_IK_EE_BODY_NAME", "").strip()
+            if ee_body_name:
+                arm_action.ee_body_name = ee_body_name
             arm_action.damping = self.ik_lambda_val
             arm_action.step_gain = self.ik_step_gain
             arm_action.max_joint_delta = self.ik_max_joint_delta
