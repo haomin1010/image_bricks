@@ -19,7 +19,6 @@ class StackingStateMachine:
         grid_origin=[0.5, 0.0, 0.001],
         cell_size=0.056,
         grid_size=8,
-        ee_tool_offset_x=0.1585,
     ):
         self.num_envs = num_envs
         self.device = device
@@ -29,8 +28,6 @@ class StackingStateMachine:
         self.cube_z_size = cube_z_size
         self.grid_origin = torch.tensor(grid_origin, device=device)
         self.cell_size = cell_size
-        # Offset from ee_link to suction/contact point in EE-local +X.
-        self.ee_tool_offset_local = torch.tensor([float(ee_tool_offset_x), 0.0, 0.0], device=device)
         
         # Per-environment target data
         self.target_positions = torch.zeros((num_envs, max_tasks, 3), device=device)
@@ -47,6 +44,7 @@ class StackingStateMachine:
         
         # IDLE position: initial end-effector position
         self.idle_pos = torch.zeros((num_envs, 3), device=device)
+        self.idle_pos_initialized = torch.zeros(num_envs, dtype=torch.bool, device=device)
 
         # IDLE state constant
         self.IDLE = -2
@@ -64,6 +62,7 @@ class StackingStateMachine:
         src_x = grid_origin[0] + half_width + cell_size / 2.0
         src_y = grid_origin[1] - half_width
         self.source_pick_pos = torch.tensor([src_x, src_y], device=device)
+
         
         # PID state
         self.prev_error = torch.zeros((num_envs, 3), device=device)
@@ -117,6 +116,8 @@ class StackingStateMachine:
         self.has_pending_targets[env_ids] = False
         self.new_task_available[env_ids] = False
         self.new_task_index[env_ids] = -1
+        # Re-capture idle position from the first post-reset observation.
+        self.idle_pos_initialized[env_ids] = False
 
     def reset_all(self):
         self.reset_envs(torch.arange(self.num_envs, device=self.device))
@@ -127,7 +128,7 @@ class StackingStateMachine:
         self.prev_error[env_idx] *= 0
 
     def compute_ee_pose_targets(self, obs):
-        """Compute absolute EE pose targets in env-local frame.
+        """Compute absolute EE pose targets in world frame.
 
         This is the authoritative output from server-side task logic: pose coordinates
         (position + quaternion), not velocities.
@@ -139,41 +140,49 @@ class StackingStateMachine:
         if not isinstance(policy_obs, dict):
             raise TypeError(f"Invalid policy observation container: {type(policy_obs)}")
 
-        ee_pos = policy_obs.get("eef_pos", policy_obs.get("ee_pos", None))
-        ee_quat = policy_obs.get("eef_quat", policy_obs.get("ee_quat", None))
+        ee_pos = policy_obs.get("ee_pos", None)
+        ee_quat = policy_obs.get("ee_quat", None)
         if ee_pos is None or ee_quat is None:
             raise KeyError(
                 "Policy observations must contain EE pose terms. "
-                "Expected keys: ('eef_pos' or 'ee_pos') and ('eef_quat' or 'ee_quat'). "
+                "Expected keys: 'ee_pos' and 'ee_quat'. "
                 f"Available keys: {list(policy_obs.keys())}"
             )
-        env_origins = self.scene.env_origins
+
+        # Record per-env idle position from the first valid observation after reset.
+        new_idle_envs = ~self.idle_pos_initialized
+        if torch.any(new_idle_envs):
+            self.idle_pos[new_idle_envs] = ee_pos[new_idle_envs]
+            self.idle_pos_initialized[new_idle_envs] = True
 
         target_pos_all = torch.zeros((self.num_envs, 3), device=self.device)
         target_quat_all = torch.zeros((self.num_envs, 4), device=self.device)
         gripper_cmd_all = torch.ones((self.num_envs,), device=self.device)
 
         cube_z_size = self.cube_z_size
-        safe_z = 0.45
+        safe_z_local = 0.45
 
         for i in range(self.num_envs):
-            source_pick_fallback = torch.tensor(
+            env_origin = self.scene.env_origins[i]
+            safe_z = env_origin[2] + safe_z_local
+            source_pick_local = torch.tensor(
                 [self.source_pick_pos[0], self.source_pick_pos[1], cube_z_size / 2.0],
                 device=self.device,
             )
+            source_pick_fallback = source_pick_local + env_origin
 
             if self.num_tasks_per_env[i] == 0 or self.task_index[i] >= self.num_tasks_per_env[i]:
-                target_pos = torch.tensor([0.4, 0.0, 0.4], device=self.device)
+                target_pos = self.idle_pos[i].clone()
                 gripper_cmd = 1.0
             else:
                 cube_name = self.cube_names[self.task_index[i].item()]
                 cube_asset = self.scene[cube_name]
-                cube_pos_local = cube_asset.data.root_pos_w[i] - env_origins[i]
+                cube_pos_world = cube_asset.data.root_pos_w[i]
                 cube_quat_w = cube_asset.data.root_quat_w[i]
                 _, _, cube_yaw = math_utils.euler_xyz_from_quat(cube_quat_w.unsqueeze(0))
                 # Use live cube pose for grasp/descend targets. Fall back to nominal
                 # source point if the cube pose is temporarily invalid.
-                live_source_pos = cube_pos_local.clone()
+                live_source_pos = cube_pos_world.clone()
                 live_valid = bool(torch.isfinite(live_source_pos).all().item())
                 if live_valid:
                     live_z = float(live_source_pos[2].item())
@@ -183,27 +192,11 @@ class StackingStateMachine:
                     live_source_pos = source_pick_fallback.clone()
 
                 target_world_pos = self.target_positions[i, self.task_index[i]].clone()
-                try:
-                    target_local = target_world_pos - env_origins[i]
-                except Exception:
-                    target_local = target_world_pos.clone()
-
-                def _tool_target_to_ee(tool_target_pos: torch.Tensor, yaw_scalar: torch.Tensor) -> torch.Tensor:
-                    yaw_arg = yaw_scalar.unsqueeze(0) if yaw_scalar.ndim == 0 else yaw_scalar
-                    quat_for_offset = math_utils.quat_from_euler_xyz(
-                        torch.tensor([0.0], device=self.device),
-                        torch.tensor([1.5707], device=self.device),
-                        yaw_arg,
-                    ).to(self.device).squeeze(0)
-                    offset_world = math_utils.quat_apply(
-                        quat_for_offset.unsqueeze(0), self.ee_tool_offset_local.unsqueeze(0)
-                    ).squeeze(0)
-                    return tool_target_pos - offset_world
 
                 if self.state[i] == self.APPROACH_CUBE:
                     tool_target_pos = live_source_pos.clone()
                     tool_target_pos[2] = safe_z
-                    target_pos = _tool_target_to_ee(tool_target_pos, cube_yaw.squeeze(0))
+                    target_pos = tool_target_pos
                     gripper_cmd = 1.0
 
                     _, _, ee_yaw = math_utils.euler_xyz_from_quat(ee_quat[i].unsqueeze(0))
@@ -217,7 +210,7 @@ class StackingStateMachine:
                 elif self.state[i] == self.DESCEND_CUBE:
                     tool_target_pos = live_source_pos.clone()
                     tool_target_pos[2] = live_source_pos[2] + (cube_z_size / 2.0) + 0.01
-                    target_pos = _tool_target_to_ee(tool_target_pos, self.lock_yaw[i])
+                    target_pos = tool_target_pos
                     gripper_cmd = 1.0
                     if torch.abs(ee_pos[i, 2] - target_pos[2]) < 0.01:
                         self.state[i] = self.GRASP
@@ -226,7 +219,7 @@ class StackingStateMachine:
                 elif self.state[i] == self.GRASP:
                     tool_target_pos = live_source_pos.clone()
                     tool_target_pos[2] = live_source_pos[2] + (cube_z_size / 2.0) - 0.002
-                    target_pos = _tool_target_to_ee(tool_target_pos, self.lock_yaw[i])
+                    target_pos = tool_target_pos
                     gripper_cmd = -1.0
                     if int(self.attached_cube_idx[i].item()) == int(self.task_index[i].item()):
                         self.state[i] = self.LIFT
@@ -241,18 +234,18 @@ class StackingStateMachine:
                         self.state_timer[i] = 0
 
                 elif self.state[i] == self.APPROACH_TARGET:
-                    tool_target_pos = target_local.clone()
+                    tool_target_pos = target_world_pos.clone()
                     tool_target_pos[2] = safe_z
-                    target_pos = _tool_target_to_ee(tool_target_pos, self.lock_yaw[i])
+                    target_pos = tool_target_pos
                     gripper_cmd = -1.0
                     if torch.norm(ee_pos[i, :2] - target_pos[:2]) < 0.01:
                         self.state[i] = self.DESCEND_TARGET
                         self.state_timer[i] = 0
 
                 elif self.state[i] == self.DESCEND_TARGET:
-                    tool_target_pos = target_local.clone()
-                    tool_target_pos[2] = target_local[2] + (cube_z_size / 2.0) + 0.005
-                    target_pos = _tool_target_to_ee(tool_target_pos, self.lock_yaw[i])
+                    tool_target_pos = target_world_pos.clone()
+                    tool_target_pos[2] = target_world_pos[2] + (cube_z_size / 2.0) + 0.005
+                    target_pos = tool_target_pos
                     gripper_cmd = -1.0
                     if torch.abs(ee_pos[i, 2] - target_pos[2]) < 0.01:
                         self.state[i] = self.RELEASE
@@ -282,7 +275,7 @@ class StackingStateMachine:
                             self.wait_timer[i] = 2
                         self.state_timer[i] = 0
                 else:
-                    target_pos = torch.tensor([0.4, 0.0, 0.4], device=self.device)
+                    target_pos = self.idle_pos[i].clone()
                     gripper_cmd = 1.0
 
             state_i = int(self.state[i].item())
@@ -317,7 +310,8 @@ class StackingStateMachine:
                 torch.tensor([1.5707], device=self.device),
                 target_yaw,
             ).to(self.device).squeeze(0)
-            if torch.sum(target_quat * ee_quat[i]) < 0:
+            quat_dot = torch.sum(target_quat * ee_quat[i])
+            if quat_dot < 0:
                 target_quat = -target_quat
 
             target_pos_all[i] = target_pos

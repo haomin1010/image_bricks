@@ -7,8 +7,11 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from isaaclab.managers import ActionTerm, ActionTermCfg, EventTermCfg, ManagerTermBase
+from isaaclab.managers import ActionTerm, ActionTermCfg, EventTermCfg, ManagerTermBase, SceneEntityCfg
 from isaaclab.utils import configclass
+
+from .observations import ee_pos as obs_ee_pos
+from .observations import ee_quat as obs_ee_quat
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
@@ -138,6 +141,7 @@ class VagenMagicSuctionController:
         cube_size: float,
         attach_distance: float = 0.05,
         close_command_threshold: float = 0.0,
+        ee_body_name: str = "panda_link7",
     ):
         self.env = env
         self.scene = env.unwrapped.scene
@@ -150,11 +154,8 @@ class VagenMagicSuctionController:
         self._attached_cube_idx = torch.full((self.num_envs,), -1, device=self.device, dtype=torch.long)
         self.env.unwrapped._vagen_magic_suction_attached_cube_idx = self._attached_cube_idx
 
-        try:
-            self._ee_frame_sensor = self.scene["ee_frame"]
-        except Exception:
-            self._ee_frame_sensor = None
-            print("[WARN]: Magic suction could not find scene['ee_frame']; controller will stay idle.")
+        self._robot_cfg = SceneEntityCfg("robot")
+        self._ee_body_name = str(ee_body_name)
         self._cb_name = f"vagen_magic_suction_{id(self)}"
         self._cb_registered = False
 
@@ -213,21 +214,11 @@ class VagenMagicSuctionController:
         del dt
         self.apply()
 
-    def _read_ee_pose_world(self) -> tuple[torch.Tensor | None, torch.Tensor | None]:
-        if self._ee_frame_sensor is None:
-            return None, None
-        try:
-            ee_pos_w = self._ee_frame_sensor.data.target_pos_w[:, 0, :]
-            ee_quat_w = self._ee_frame_sensor.data.target_quat_w[:, 0, :]
-        except Exception:
-            return None, None
-        if ee_pos_w is None or ee_quat_w is None:
-            return None, None
-        return ee_pos_w, ee_quat_w
-
     def apply(self):
-        ee_pos_w, ee_quat_w = self._read_ee_pose_world()
-        if ee_pos_w is None:
+        try:
+            ee_pos_w = obs_ee_pos(env=self.env, robot_cfg=self._robot_cfg, ee_body_name=self._ee_body_name)
+            ee_quat_w = obs_ee_quat(env=self.env, robot_cfg=self._robot_cfg, ee_body_name=self._ee_body_name)
+        except Exception:
             return
 
         cmd = getattr(self.env.unwrapped, "_vagen_magic_suction_cmd", None)
@@ -316,6 +307,7 @@ class MagicSuctionControllerEvent(ManagerTermBase):
         cube_size: float = 0.045,
         attach_distance: float = 0.05,
         close_command_threshold: float = 0.0,
+        ee_body_name: str = "panda_link7",
     ):
         del env_ids
         if self._controller is not None:
@@ -336,6 +328,7 @@ class MagicSuctionControllerEvent(ManagerTermBase):
             cube_size=float(cube_size),
             attach_distance=float(attach_distance),
             close_command_threshold=float(close_command_threshold),
+            ee_body_name=str(ee_body_name),
         )
         env.unwrapped._vagen_magic_suction_controller = self._controller
         env.unwrapped._vagen_magic_suction_cube_names = tuple(resolved_names)

@@ -7,25 +7,34 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import MISSING
+import os
 from typing import TYPE_CHECKING
 
 import torch
 
 from isaaclab.assets import Articulation
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
-from isaaclab.managers import ActionTerm, ActionTermCfg
+from isaaclab.envs.mdp.observations import joint_pos as obs_joint_pos
+from isaaclab.managers import ActionTerm, ActionTermCfg, SceneEntityCfg
+from isaaclab.sensors import FrameTransformer
 import isaaclab.utils.math as math_utils
 from isaaclab.utils import configclass
+
+from .observations import ee_pos as obs_ee_pos
+from .observations import ee_quat as obs_ee_quat
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
 
+DEFAULT_EE_BODY_NAME = os.getenv("VAGEN_IK_EE_BODY_NAME", "panda_link7") or "panda_link7"
+
+
 class PinocchioPoseAction(ActionTerm):
-    r"""Pose-target action term for UR10 joint targets (GPU DLS IK only).
+    r"""Pose-target action term for arm joint targets (GPU DLS IK only).
 
     Input action (per env): ``[x, y, z, qw, qx, qy, qz]`` in world coordinates.
-    Applied output (per env): joint position target for configured UR10 arm joints.
+    Applied output (per env): joint position target for configured arm joints.
     """
 
     cfg: PinocchioPoseActionCfg
@@ -45,6 +54,10 @@ class PinocchioPoseAction(ActionTerm):
         self._body_name: str
         self._jacobi_body_idx: int
         self._jacobi_joint_ids: list[int]
+        self._robot_cfg = SceneEntityCfg(cfg.asset_name)
+        self._joint_obs_cfg: SceneEntityCfg
+        self._ee_frame: FrameTransformer | None = None
+        self._use_ee_frame_feedback = bool(cfg.use_ee_frame_feedback)
 
         self._nominal_joint_pos = None
         if cfg.use_default_nominal_joint_pos:
@@ -57,6 +70,7 @@ class PinocchioPoseAction(ActionTerm):
             )
         self._body_idx = int(body_ids[0])
         self._body_name = str(body_names[0])
+        self._joint_obs_cfg = SceneEntityCfg(cfg.asset_name, joint_ids=list(self._joint_ids))
         if self._asset.is_fixed_base:
             self._jacobi_body_idx = self._body_idx - 1
             self._jacobi_joint_ids = list(self._joint_ids)
@@ -77,6 +91,7 @@ class PinocchioPoseAction(ActionTerm):
         print(
             "[INFO]: PinocchioPoseAction initialized "
             f"backend=dls_gpu body={self._body_name} joints={self._joint_names} "
+            f"curr_pose_source={'ee_frame' if self._use_ee_frame_feedback else 'ee_pos'} "
             f"lambda={cfg.damping} step_gain={cfg.step_gain} "
             f"max_joint_delta={cfg.max_joint_delta} nullspace_gain={cfg.nullspace_gain}"
         )
@@ -107,37 +122,31 @@ class PinocchioPoseAction(ActionTerm):
         jacobian[:, 3:, :] = torch.bmm(base_rot_matrix, jacobian[:, 3:, :])
         return jacobian
 
-    def _compute_body_pose_in_base(self) -> tuple[torch.Tensor, torch.Tensor]:
-        ee_pos_w = self._asset.data.body_pos_w[:, self._body_idx]
-        ee_quat_w = self._asset.data.body_quat_w[:, self._body_idx]
-        root_pos_w = self._asset.data.root_pos_w
-        root_quat_w = self._asset.data.root_quat_w
-        ee_pos_b, ee_quat_b = math_utils.subtract_frame_transforms(root_pos_w, root_quat_w, ee_pos_w, ee_quat_w)
-        return ee_pos_b, ee_quat_b
-
-    def _target_pose_world_to_base(
-        self,
-        ee_pos_target_w: torch.Tensor,
-        ee_quat_target_w: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        root_pos_w = self._asset.data.root_pos_w
-        root_quat_w = self._asset.data.root_quat_w
-        ee_pos_target_b, ee_quat_target_b = math_utils.subtract_frame_transforms(
-            root_pos_w, root_quat_w, ee_pos_target_w, ee_quat_target_w
-        )
-        return ee_pos_target_b, ee_quat_target_b
-
     def _process_actions_dls_gpu(self, ee_pos_target_w: torch.Tensor, ee_quat_target_w: torch.Tensor) -> None:
-        ee_pos_curr_b, ee_quat_curr_b = self._compute_body_pose_in_base()
-        ee_pos_target_b, ee_quat_target_b = self._target_pose_world_to_base(ee_pos_target_w, ee_quat_target_w)
+        ee_pos_curr_body_w = obs_ee_pos(env=self._env, robot_cfg=self._robot_cfg, ee_body_name=self.cfg.ee_body_name)
+        ee_quat_curr_body_w = obs_ee_quat(env=self._env, robot_cfg=self._robot_cfg, ee_body_name=self.cfg.ee_body_name)
+
+        if self._use_ee_frame_feedback and self._ee_frame is not None:
+            ee_pos_curr_w = self._ee_frame.data.target_pos_w[:, 0, :]
+            ee_quat_curr_w = self._ee_frame.data.target_quat_w[:, 0, :]
+            jacobian_w = self.jacobian_w.clone()
+            tcp_offset_w = ee_pos_curr_w - ee_pos_curr_body_w
+            jacobian_w[:, :3, :] = jacobian_w[:, :3, :] - torch.bmm(
+                math_utils.skew_symmetric_matrix(tcp_offset_w), jacobian_w[:, 3:, :]
+            )
+        else:
+            ee_pos_curr_w = ee_pos_curr_body_w
+            ee_quat_curr_w = ee_quat_curr_body_w
+            jacobian_w = self.jacobian_w
+
         self._ik_controller.set_command(
-            torch.cat((ee_pos_target_b, ee_quat_target_b), dim=-1),
-            ee_pos_curr_b,
-            ee_quat_curr_b,
+            torch.cat((ee_pos_target_w, ee_quat_target_w), dim=-1),
+            ee_pos_curr_w,
+            ee_quat_curr_w,
         )
 
-        joint_pos_curr = self._asset.data.joint_pos[:, self._joint_ids]
-        joint_pos_des = self._ik_controller.compute(ee_pos_curr_b, ee_quat_curr_b, self.jacobian_b, joint_pos_curr)
+        joint_pos_curr = obs_joint_pos(env=self._env, asset_cfg=self._joint_obs_cfg)
+        joint_pos_des = self._ik_controller.compute(ee_pos_curr_w, ee_quat_curr_w, jacobian_w, joint_pos_curr)
 
         # Preserve legacy stability behavior from Pinocchio path.
         delta_joint_pos = joint_pos_des - joint_pos_curr
@@ -186,7 +195,9 @@ class PinocchioPoseActionCfg(ActionTermCfg):
     asset_name: str = MISSING
     joint_names: list[str] = MISSING
     preserve_order: bool = True
-    ee_body_name: str = "ee_link"
+    ee_body_name: str = DEFAULT_EE_BODY_NAME
+    use_ee_frame_feedback: bool = True
+    ee_frame_name: str = "ee_frame"
     damping: float = 0.10
     step_gain: float = 0.70
     max_joint_delta: float = 0.08

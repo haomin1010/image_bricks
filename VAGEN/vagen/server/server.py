@@ -19,11 +19,9 @@ class VagenStackExecutionManager:
         cube_size: float,
         ik_lambda_val: float | None = None,
         *,
-        task_name: str | None = None,
         max_tasks: int | None = None,
         grid_origin: list[float] | tuple[float, float, float] = (0.5, 0.0, 0.001),
         cell_size: float = 0.056,
-        ee_tool_offset_x: float | None = None,
     ):
         self.env = env
         self.cube_names = cube_names
@@ -39,11 +37,6 @@ class VagenStackExecutionManager:
             if max_tasks is None
             else max(1, int(max_tasks))
         )
-        resolved_ee_tool_offset_x = (
-            (0.22 if task_name and "Long-Suction" in task_name else 0.1585)
-            if ee_tool_offset_x is None
-            else float(ee_tool_offset_x)
-        )
         self.sm = StackingStateMachine(
             self.num_envs,
             self.device,
@@ -53,7 +46,6 @@ class VagenStackExecutionManager:
             cube_z_size=self.cube_size,
             grid_origin=list(grid_origin),
             cell_size=float(cell_size),
-            ee_tool_offset_x=resolved_ee_tool_offset_x,
         )
 
         # Lazy import to avoid importing task modules before Isaac app startup.
@@ -81,8 +73,7 @@ class VagenStackExecutionManager:
         )
         print(
             f"[INFO]: State machine initialized by manager "
-            f"(max_tasks={resolved_max_tasks}, cell_size={float(cell_size):.4f}, "
-            f"ee_tool_offset_x={resolved_ee_tool_offset_x:.4f})"
+            f"(max_tasks={resolved_max_tasks}, cell_size={float(cell_size):.4f})"
         )
 
     def reset_all(self):

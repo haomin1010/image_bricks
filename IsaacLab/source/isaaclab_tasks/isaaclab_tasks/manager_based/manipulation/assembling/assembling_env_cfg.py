@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import isaaclab.sim as sim_utils
+import torch
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.devices.openxr import XrCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
@@ -20,30 +21,23 @@ from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransf
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from isaaclab_assets.robots.universal_robots import UR10_SHORT_SUCTION_CFG
 
-from isaaclab_tasks.manager_based.manipulation.stack.mdp import franka_stack_events
-
-from .cfg_override import AssemblingCfgOverride
-from . import mdp
-
-UR10_ARM_JOINT_NAMES = [
-    "shoulder_pan_joint",
-    "shoulder_lift_joint",
-    "elbow_joint",
-    "wrist_1_joint",
-    "wrist_2_joint",
-    "wrist_3_joint",
-]
-ASSEMBLING_MAX_CUBES = int(os.getenv("VAGEN_MAX_CUBES", str(getattr(mdp, "DEFAULT_MAX_CUBES", 8))))
-ASSEMBLING_CAMERA_NAMES = tuple(
-    getattr(mdp, "STACK_CAMERA_NAMES", ("camera", "camera_front", "camera_side", "camera_iso", "camera_iso2"))
+from .cfg_override import (
+    ASSEMBLING_EE_BODY_NAME,
+    ASSEMBLING_EE_TARGET_PRIM_PATH,
+    ASSEMBLING_MAX_CUBES,
+    DEFAULT_ARM_RESET_POSE,
+    DEFAULT_GRID_CELL_SIZE,
+    DEFAULT_GRID_LINE_THICKNESS,
+    DEFAULT_GRID_ORIGIN,
+    DEFAULT_GRID_SIZE,
+    FRANKA_ARM_JOINT_NAMES,
+    FRANKA_ARM_ONLY_CFG,
+    FRANKA_UR10_TCP_OFFSET_POS_DEFAULT,
+    FRANKA_UR10_TCP_OFFSET_ROT_DEFAULT,
+    AssemblingCfgOverride,
 )
-DEFAULT_GRID_ORIGIN: tuple[float, float, float] = (0.5, 0.0, 0.001)
-DEFAULT_GRID_SIZE = 8
-DEFAULT_GRID_LINE_THICKNESS = 0.001
-DEFAULT_GRID_CELL_SIZE = 0.055 + DEFAULT_GRID_LINE_THICKNESS
-
+from . import mdp
 
 def _env_flag(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -52,20 +46,51 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "off", "no"}
 
 
+def _set_default_joint_pose(
+    env,
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """Directly hardcode robot joint positions on reset."""
+    robot = env.scene[asset_cfg.name]
+    device = robot.data.joint_pos.device
+    dtype = robot.data.joint_pos.dtype
+
+    if env_ids is None:
+        env_ids_t = torch.arange(env.num_envs, device=device, dtype=torch.long)
+    else:
+        env_ids_t = torch.as_tensor(env_ids, device=device, dtype=torch.long)
+        if env_ids_t.numel() == 0:
+            return
+
+    default_pose_t = torch.as_tensor(DEFAULT_ARM_RESET_POSE, device=device, dtype=dtype).reshape(1, -1)
+    dof = min(int(default_pose_t.shape[-1]), int(robot.data.joint_pos.shape[-1]))
+
+    robot.data.joint_pos[env_ids_t, :dof] = default_pose_t[:, :dof]
+    robot.data.joint_vel[env_ids_t] = 0.0
+
+    env_ids_i32 = env_ids_t.to(dtype=torch.int32)
+    robot.write_joint_state_to_sim(
+        robot.data.joint_pos[env_ids_t],
+        robot.data.joint_vel[env_ids_t],
+        env_ids=env_ids_i32,
+    )
+
+
 @configclass
 class ObjectTableSceneCfg(InteractiveSceneCfg):
     """Base scene: robot + ee frame + table + ground + light."""
 
-    robot: ArticulationCfg = UR10_SHORT_SUCTION_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot: ArticulationCfg = FRANKA_ARM_ONLY_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
     ee_frame: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/base_link",
+        prim_path="{ENV_REGEX_NS}/Robot/panda_link0",
         debug_vis=False,
         visualizer_cfg=None,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/ee_link",
+                prim_path=ASSEMBLING_EE_TARGET_PRIM_PATH,
                 name="end_effector",
-                offset=OffsetCfg(pos=[0.1585, 0.0, 0.0]),
+                offset=OffsetCfg(pos=FRANKA_UR10_TCP_OFFSET_POS_DEFAULT, rot=FRANKA_UR10_TCP_OFFSET_ROT_DEFAULT),
             ),
         ],
     )
@@ -88,7 +113,6 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        self.override_local_assets_if_present()
         if _env_flag("VAGEN_ENABLE_GRID_VISUALS", default=True):
             grid_origin, grid_size, cell_size, line_thickness = self.get_grid_spec()
             self.configure_grid_visuals(
@@ -225,39 +249,14 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
             return f"{ISAAC_NUCLEUS_DIR}/{nucleus_rel}"
         return None
 
-    def override_local_assets_if_present(self, *, isaac_assets_root: Path | str | None = None) -> None:
-        robot_usd = self.resolve_asset_path(
-            local_rel="Robots/UniversalRobots/ur10/ur10.usd",
-            isaac_assets_root=isaac_assets_root,
-        )
-        if robot_usd is not None and hasattr(self, "robot") and self.robot is not None:
-            if hasattr(self.robot.spawn, "usd_path"):
-                self.robot.spawn.usd_path = robot_usd
-
-        table_usd = self.resolve_asset_path(
-            local_rel="Props/Mounts/SeattleLabTable/table_instanceable.usd",
-            isaac_assets_root=isaac_assets_root,
-        )
-        if table_usd is not None and getattr(self, "table", None) is not None:
-            if hasattr(self.table.spawn, "usd_path"):
-                self.table.spawn.usd_path = table_usd
-
-        ground_usd = self.resolve_asset_path(
-            local_rel="Environments/Grid/default_environment.usd",
-            isaac_assets_root=isaac_assets_root,
-        )
-        if ground_usd is not None and getattr(self, "plane", None) is not None:
-            if hasattr(self.plane.spawn, "usd_path"):
-                self.plane.spawn.usd_path = ground_usd
-
-
 @configclass
 class ActionsCfg:
     """Action specifications for the environment."""
 
     arm_action: mdp.PinocchioPoseActionCfg = mdp.PinocchioPoseActionCfg(
         asset_name="robot",
-        joint_names=UR10_ARM_JOINT_NAMES,
+        joint_names=FRANKA_ARM_JOINT_NAMES,
+        ee_body_name=ASSEMBLING_EE_BODY_NAME,
     )
     gripper_action: mdp.MagicSuctionBinaryActionCfg = mdp.MagicSuctionBinaryActionCfg(asset_name="robot")
 
@@ -271,19 +270,17 @@ class ObservationsCfg:
         actions = ObsTerm(func=mdp.last_action)
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
-        object = ObsTerm(func=mdp.object_obs)
         cube_positions = ObsTerm(
-            func=mdp.all_cube_positions_in_env_frame,
+            func=mdp.all_cube_positions_in_world_frame,
             params={"max_cubes": ASSEMBLING_MAX_CUBES},
         )
+        env_origin = ObsTerm(func=mdp.env_origin)
         cube_orientations = ObsTerm(
             func=mdp.all_cube_orientations_in_world_frame,
             params={"max_cubes": ASSEMBLING_MAX_CUBES},
         )
-        cube_mask = ObsTerm(func=mdp.cube_availability_mask, params={"max_cubes": ASSEMBLING_MAX_CUBES})
-        eef_pos = ObsTerm(func=mdp.ee_frame_pos)
-        eef_quat = ObsTerm(func=mdp.ee_frame_quat)
-        gripper_pos = ObsTerm(func=mdp.gripper_pos)
+        ee_pos = ObsTerm(func=mdp.ee_pos, params={"ee_body_name": ASSEMBLING_EE_BODY_NAME})
+        ee_quat = ObsTerm(func=mdp.ee_quat, params={"ee_body_name": ASSEMBLING_EE_BODY_NAME})
         gripper_cmd = ObsTerm(func=mdp.magic_suction_command)
 
         def __post_init__(self):
@@ -296,9 +293,8 @@ class ObservationsCfg:
             func=mdp.privileged_state,
             params={
                 "robot_cfg": SceneEntityCfg("robot"),
-                "ee_frame_cfg": SceneEntityCfg("ee_frame"),
+                "ee_body_name": ASSEMBLING_EE_BODY_NAME,
                 "max_cubes": ASSEMBLING_MAX_CUBES,
-                "camera_names": ASSEMBLING_CAMERA_NAMES,
             },
         )
 
@@ -327,14 +323,6 @@ class ObservationsCfg:
         camera_iso2 = ObsTerm(
             func=mdp.camera_image,
             params={"sensor_cfg": SceneEntityCfg("camera_iso2"), "data_type": "rgb", "normalize": False},
-        )
-        camera_params = ObsTerm(
-            func=mdp.camera_parameters,
-            params={"camera_names": ASSEMBLING_CAMERA_NAMES},
-        )
-        camera_mask = ObsTerm(
-            func=mdp.camera_availability_mask,
-            params={"camera_names": ASSEMBLING_CAMERA_NAMES},
         )
 
         def __post_init__(self):
@@ -366,9 +354,9 @@ class EventsCfg:
     """Event terms shared by assembling tasks."""
 
     init_arm_pose = EventTerm(
-        func=franka_stack_events.set_default_joint_pose,
+        func=_set_default_joint_pose,
         mode="reset",
-        params={"default_pose": [0.0, -1.5707, 1.5707, -1.5707, -1.5707, 0.0]},
+        params={},
     )
 
     magic_suction_controller = EventTerm(
@@ -380,6 +368,7 @@ class EventsCfg:
             "cube_size": float(os.getenv("VAGEN_CUBE_SIZE", "0.045")),
             "attach_distance": float(os.getenv("VAGEN_MAGIC_SUCTION_ATTACH_DISTANCE", "0.05")),
             "close_command_threshold": float(os.getenv("VAGEN_MAGIC_SUCTION_CLOSE_CMD_THRESHOLD", "0.0")),
+            "ee_body_name": ASSEMBLING_EE_BODY_NAME,
         },
     )
     teleport_pending_cubes = EventTerm(
@@ -413,4 +402,4 @@ class AssemblingEnvCfg(ManagerBasedRLEnvCfg):
     )
 
     def __post_init__(self):
-        AssemblingCfgOverride.from_env().apply(self, arm_joint_names=UR10_ARM_JOINT_NAMES)
+        AssemblingCfgOverride.from_env().apply(self, arm_joint_names=FRANKA_ARM_JOINT_NAMES)

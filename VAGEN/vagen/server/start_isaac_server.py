@@ -14,7 +14,14 @@ import signal
 from ray.exceptions import GetTimeoutError
 
 # Map ISAAC_NUCLEUS_DIR / ISAACLAB_NUCLEUS_DIR to local mirrored assets.
-os.environ.setdefault("ISAACLAB_ASSET_ROOT", "/data1/lhm/image_bricks/assets")
+_repo_assets_root = Path(__file__).resolve().parents[3] / "assets"
+_configured_asset_root = os.environ.get("ISAACLAB_ASSET_ROOT")
+if _configured_asset_root:
+    configured_path = Path(_configured_asset_root)
+    if not configured_path.exists() and _repo_assets_root.exists():
+        os.environ["ISAACLAB_ASSET_ROOT"] = str(_repo_assets_root)
+else:
+    os.environ["ISAACLAB_ASSET_ROOT"] = str(_repo_assets_root)
 
 
 @ray.remote(num_cpus=0.1, num_gpus=0)
@@ -383,7 +390,6 @@ def main():
             cube_names=cube_names,
             cube_size=config.get("cube_size", 0.045),
             ik_lambda_val=args.ik_lambda_val,
-            task_name=config["task"],
             cell_size=cell_size,
         ),
     )
