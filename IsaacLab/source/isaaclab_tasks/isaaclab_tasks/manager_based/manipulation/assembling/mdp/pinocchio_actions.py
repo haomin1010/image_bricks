@@ -74,12 +74,19 @@ class _UR10PinocchioSolver:
 
     @staticmethod
     def default_ur10_urdf_candidates() -> list[str]:
-        base = Path("/home/user/miniconda3/envs/bricks/lib/python3.11/site-packages/isaacsim/exts")
-        return [
-            str(base / "isaacsim.robot_motion.motion_generation/motion_policy_configs/universal_robots/ur10/ur10_robot_suction.urdf"),
-            str(base / "isaacsim.robot_motion.motion_generation/motion_policy_configs/universal_robots/ur10/ur10_robot.urdf"),
-            str(base / "isaacsim.asset.importer.urdf/data/urdf/robots/ur10/urdf/ur10.urdf"),
-        ]
+        import sys
+        # Dynamically resolve the isaacsim exts directory from the active Python environment.
+        # This avoids hard-coding paths that differ between machines/users.
+        active_base = Path(sys.prefix) / "lib/python3.11/site-packages/isaacsim/exts"
+        fallback_base = Path("/home/user/miniconda3/envs/bricks/lib/python3.11/site-packages/isaacsim/exts")
+        candidates = []
+        for base in [active_base, fallback_base]:
+            candidates += [
+                str(base / "isaacsim.robot_motion.motion_generation/motion_policy_configs/universal_robots/ur10/ur10_robot_suction.urdf"),
+                str(base / "isaacsim.robot_motion.motion_generation/motion_policy_configs/universal_robots/ur10/ur10_robot.urdf"),
+                str(base / "isaacsim.asset.importer.urdf/data/urdf/robots/ur10/urdf/ur10.urdf"),
+            ]
+        return candidates
 
     def solve_step(
         self,
