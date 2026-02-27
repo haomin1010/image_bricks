@@ -23,6 +23,7 @@ import json
 import os
 import shlex
 import signal
+import socket
 import shutil
 import subprocess
 import sys
@@ -34,7 +35,7 @@ import ray
 from ray.exceptions import GetTimeoutError
 
 
-DEFAULT_TASK = "Isaac-Assembling-Cube-UR10-Short-Suction-Joint-Pos-v0"
+DEFAULT_TASK = "multipicture_assembling_from_begin"
 DEFAULT_GOALS = "2,2,0;3,2,0;3,3,0"
 DEFAULT_CAMERAS = "0,1,2,3,4"
 DEFAULT_RAY_HEAD_LOG = "outputs/ray_test.log"
@@ -103,9 +104,57 @@ def expect_keys(payload: Dict[str, Any], keys: Sequence[str], label: str) -> Non
         raise AssertionError(f"{label} missing keys: {missing}; payload keys={list(payload.keys())}")
 
 
+def _read_auto_ray_address() -> Optional[str]:
+    env_addr = os.environ.get("RAY_ADDRESS", "").strip()
+    if env_addr:
+        return env_addr
+
+    current_cluster = Path("/tmp/ray/ray_current_cluster")
+    if current_cluster.exists():
+        try:
+            text = current_cluster.read_text(encoding="utf-8", errors="replace").strip()
+            if text:
+                return text
+        except Exception:
+            return None
+    return None
+
+
+def _ray_address_is_reachable(address: str, timeout_s: float = 1.0) -> bool:
+    host = ""
+    port_text = ""
+    if "://" in address:
+        address = address.split("://", 1)[1]
+    if ":" in address:
+        host, port_text = address.rsplit(":", 1)
+    if not host or not port_text.isdigit():
+        return False
+    port = int(port_text)
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
+
+
 def ensure_ray_initialized(address: str, namespace: str, local_fallback: bool) -> None:
     if ray.is_initialized():
         return
+
+    if address.strip().lower() in {"", "local"}:
+        ray.init(address="local", namespace=namespace, ignore_reinit_error=True)
+        print(f"[INFO] Local Ray initialized: namespace={namespace}")
+        return
+
+    if address == "auto" and local_fallback:
+        auto_addr = _read_auto_ray_address()
+        if auto_addr and not _ray_address_is_reachable(auto_addr):
+            print(f"[WARN] Ray auto address seems unreachable: {auto_addr}")
+            print("[INFO] Skip ray.init(address='auto'); initialize local Ray directly.")
+            ray.init(address="local", namespace=namespace, ignore_reinit_error=True)
+            print(f"[INFO] Local Ray initialized: namespace={namespace}")
+            return
 
     try:
         ray.init(address=address, namespace=namespace, ignore_reinit_error=True)
@@ -116,7 +165,7 @@ def ensure_ray_initialized(address: str, namespace: str, local_fallback: bool) -
             raise
         print(f"[WARN] ray.init(address='auto') failed: {exc}")
         print("[INFO] Falling back to local Ray runtime.")
-        ray.init(namespace=namespace, ignore_reinit_error=True)
+        ray.init(address="local", namespace=namespace, ignore_reinit_error=True)
         print(f"[INFO] Local Ray initialized: namespace={namespace}")
 
 
@@ -227,6 +276,13 @@ def start_server_if_needed(args: argparse.Namespace) -> Tuple[Optional[subproces
         cmd.extend(shlex.split(args.server_extra_args))
 
     env = os.environ.copy()
+    # Ensure auto-started server joins the same cluster as this test process.
+    try:
+        gcs_address = getattr(ray.get_runtime_context(), "gcs_address", None)
+        if isinstance(gcs_address, str) and gcs_address.strip():
+            env["RAY_ADDRESS"] = gcs_address.strip()
+    except Exception:
+        pass
     if args.server_cuda_visible_devices:
         env["CUDA_VISIBLE_DEVICES"] = args.server_cuda_visible_devices
     env.setdefault("PYTHONUNBUFFERED", "1")
