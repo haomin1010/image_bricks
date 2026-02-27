@@ -1,5 +1,5 @@
 env_registry:
   Sokoban: vagen.envs.sokoban.sokoban_env.Sokoban
   FrozenLake: vagen.envs.frozenlake.frozenlake_env.FrozenLake
-  BrickIsaac: vagen.envs.isaac.isaac_managed_env.IsaacManagedEnv
-  BrickIsaacFullView: vagen.envs.isaac_full_view.isaac_managed_env.IsaacManagedEnv
+  BrickIsaacPartialView: vagen.envs.isaac_partial_view.isaac_managed_env.IsaacManagedEnv
+  BrickIsaacFullView: vagen.envs.isaac.isaac_managed_env.IsaacManagedEnv

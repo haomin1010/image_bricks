@@ -1,5 +1,5 @@
 envs:
-  - name: BrickIsaac              # registered env name in env_registry.yaml
+  - name: BrickIsaacPartialView              # registered env name in env_registry.yaml
     n_envs: 5000                  # number of parallel environment instances
     data_source: brick_isaac      # nickname for logging (wandb, console)
     seed: [1, 5000, 1]           # sample seeds from 1..5000, each seed used at most 1 time
