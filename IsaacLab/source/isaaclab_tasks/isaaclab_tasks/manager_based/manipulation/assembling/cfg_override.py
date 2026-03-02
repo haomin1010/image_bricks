@@ -61,6 +61,11 @@ FRANKA_ARM_ONLY_CFG.actuators = {
     for actuator_name, actuator_cfg in FRANKA_ARM_ONLY_CFG.actuators.items()
     if actuator_name in {"panda_shoulder", "panda_forearm"}
 }
+# Apply stiffer PD control suitable for differential IK task-space control
+FRANKA_ARM_ONLY_CFG.actuators["panda_shoulder"].stiffness = 400.0
+FRANKA_ARM_ONLY_CFG.actuators["panda_shoulder"].damping = 80.0
+FRANKA_ARM_ONLY_CFG.actuators["panda_forearm"].stiffness = 400.0
+FRANKA_ARM_ONLY_CFG.actuators["panda_forearm"].damping = 80.0
 ASSEMBLING_EE_BODY_NAME = "panda_link7"
 # Local transform from UR10 short gripper rigid root (/Root) to suction_cup frame.
 UR10_SHORT_SUCTION_CUP_LOCAL_POS = [0.1585, 0.0, 0.0]
@@ -74,7 +79,9 @@ DEFAULT_GRID_ORIGIN: tuple[float, float, float] = (0.5, 0.0, 0.001)
 DEFAULT_GRID_SIZE = 8
 DEFAULT_GRID_LINE_THICKNESS = 0.001
 DEFAULT_GRID_CELL_SIZE = 0.055 + DEFAULT_GRID_LINE_THICKNESS
-DEFAULT_ARM_RESET_POSE = [0.0, -0.569, 0.0, -2.810, 0.0, 3.037, 0.741]
+# Downward-pointing reset pose: J=[0,-0.785,0,-2.356,0,1.571,0.785]
+# Arm starts with wrist pointing DOWN so the IK doesn't need to flip 180°.
+DEFAULT_ARM_RESET_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
 
 
 class AssemblingCfgOverride:
@@ -148,9 +155,9 @@ class AssemblingCfgOverride:
             ),
             cube_scale=(1.0, 1.0, 1.0),
             ik_lambda_val=float(os.getenv("VAGEN_IK_LAMBDA_VAL", "0.10")),
-            ik_step_gain=float(os.getenv("VAGEN_IK_STEP_GAIN", "0.70")),
-            ik_max_joint_delta=float(os.getenv("VAGEN_IK_MAX_JOINT_DELTA", "0.08")),
-            ik_nullspace_gain=float(os.getenv("VAGEN_IK_NULLSPACE_GAIN", "0.02")),
+            ik_step_gain=float(os.getenv("VAGEN_IK_STEP_GAIN", "0.30")),
+            ik_max_joint_delta=float(os.getenv("VAGEN_IK_MAX_JOINT_DELTA", "0.02")),
+            ik_nullspace_gain=float(os.getenv("VAGEN_IK_NULLSPACE_GAIN", "0.0")),
             ee_body_name=ee_body_name,
             max_cubes=max_cubes,
             magic_suction_close_command_threshold=float(os.getenv("VAGEN_MAGIC_SUCTION_CLOSE_CMD_THRESHOLD", "0.0")),

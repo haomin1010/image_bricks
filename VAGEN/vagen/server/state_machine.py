@@ -5,7 +5,7 @@ import torch
 import isaaclab.utils.math as math_utils
 
 # Isaac Lab and Gym imports will be deferred inside the Actor to ensure
-# they are only loaded in the process that has the simulation_app.
+# they are only loaded in the process that has the simulation_app. 
 
 class StackingStateMachine:
     def __init__(
@@ -42,8 +42,10 @@ class StackingStateMachine:
         self.rotation_target = torch.zeros(num_envs, device=device)
         self.grasp_yaw = torch.zeros(num_envs, device=device)
         
-        # IDLE position: initial end-effector position
+        # IDLE position AND orientation: captured from the first post-reset observation.
+        # Using the actual TCP quaternion (not a computed one) ensures zero initial ori_err.
         self.idle_pos = torch.zeros((num_envs, 3), device=device)
+        self.idle_quat = torch.zeros((num_envs, 4), device=device)
         self.idle_pos_initialized = torch.zeros(num_envs, dtype=torch.bool, device=device)
 
         # IDLE state constant
@@ -57,10 +59,10 @@ class StackingStateMachine:
         # Magic-suction attachment state (updated by IsaacLab execution layer).
         self.attached_cube_idx = torch.full((num_envs,), -1, dtype=torch.long, device=device)
         
-        # 记录方块抓取位置：基于网格动态计算（默认放在网格右侧，垂直居中）
+        # 记录方块抓取位置：基于网格动态计算（放在网格侧边最佳工作半径 X=0.5 处）
         half_width = (grid_size * cell_size) / 2.0
-        src_x = grid_origin[0] + half_width + cell_size / 2.0
-        src_y = grid_origin[1] - half_width
+        src_x = grid_origin[0]
+        src_y = grid_origin[1] - half_width - cell_size / 2.0
         self.source_pick_pos = torch.tensor([src_x, src_y], device=device)
 
         
@@ -104,6 +106,7 @@ class StackingStateMachine:
                 self.task_index[env_id] = start_idx
                 self.state[env_id] = self.APPROACH_CUBE
 
+
     def reset_envs(self, env_ids):
         self.state[env_ids] = self.IDLE
         self.wait_timer[env_ids] = 0
@@ -133,6 +136,18 @@ class StackingStateMachine:
         This is the authoritative output from server-side task logic: pose coordinates
         (position + quaternion), not velocities.
         """
+        # Sync attachment state from the magic-suction physics controller so that
+        # the GRASP → LIFT transition can detect successful cube attachment.
+        # _env_unwrapped is injected by VagenStackExecutionManager after __init__.
+        _env_unwrapped = getattr(self, "_env_unwrapped", None)
+        suction_attached = getattr(_env_unwrapped, "_vagen_magic_suction_attached_cube_idx", None)
+        if suction_attached is None:
+            ctrl = getattr(_env_unwrapped, "_vagen_magic_suction_controller", None)
+            if ctrl is not None:
+                suction_attached = getattr(ctrl, "_attached_cube_idx", None)
+        if isinstance(suction_attached, torch.Tensor) and suction_attached.numel() >= self.num_envs:
+            self.attached_cube_idx[:] = suction_attached[: self.num_envs]
+  
         if not isinstance(obs, dict):
             raise TypeError(f"Invalid observation container: {type(obs)}")
 
@@ -153,14 +168,18 @@ class StackingStateMachine:
         new_idle_envs = ~self.idle_pos_initialized
         if torch.any(new_idle_envs):
             self.idle_pos[new_idle_envs] = ee_pos[new_idle_envs]
+            self.idle_quat[new_idle_envs] = ee_quat[new_idle_envs]
             self.idle_pos_initialized[new_idle_envs] = True
+            # Log the captured idle orientation once for debugging
+            for idx in torch.where(new_idle_envs)[0]:
+                print(f"[INIT] env={idx.item()} idle_quat={ee_quat[idx].tolist()} idle_pos={ee_pos[idx].tolist()}")
 
         target_pos_all = torch.zeros((self.num_envs, 3), device=self.device)
         target_quat_all = torch.zeros((self.num_envs, 4), device=self.device)
         gripper_cmd_all = torch.ones((self.num_envs,), device=self.device)
 
         cube_z_size = self.cube_z_size
-        safe_z_local = 0.45
+        safe_z_local = 0.25  # Keep approach target inside Franka workspace (~0.855m reach)
 
         for i in range(self.num_envs):
             env_origin = self.scene.env_origins[i]
@@ -170,6 +189,8 @@ class StackingStateMachine:
                 device=self.device,
             )
             source_pick_fallback = source_pick_local + env_origin
+
+            target_quat = None  # Each state may override; falls back to _downward_quat()
 
             if self.num_tasks_per_env[i] == 0 or self.task_index[i] >= self.num_tasks_per_env[i]:
                 target_pos = self.idle_pos[i].clone()
@@ -194,32 +215,49 @@ class StackingStateMachine:
                 target_world_pos = self.target_positions[i, self.task_index[i]].clone()
 
                 if self.state[i] == self.APPROACH_CUBE:
-                    tool_target_pos = live_source_pos.clone()
-                    tool_target_pos[2] = safe_z
-                    target_pos = tool_target_pos
+                    # SIMPLIFIED TEST: Hold original captured idle_pos completely still
+                    # to test if PD control can counteract gravity statically.
+                    target_pos = self.idle_pos[i].clone()
                     gripper_cmd = 1.0
 
-                    _, _, ee_yaw = math_utils.euler_xyz_from_quat(ee_quat[i].unsqueeze(0))
-                    yaw_diff = torch.abs(ee_yaw - cube_yaw)
-                    yaw_diff = torch.min(yaw_diff, 2 * 3.14159 - yaw_diff)
-                    if torch.norm(ee_pos[i] - target_pos) < 0.01 and yaw_diff < 0.03:
+                    # Use the captured idle orientation (actual TCP quat at reset pose).
+                    # This guarantees near-zero initial ori_err so IK focuses on translation.
+                    target_quat = self.idle_quat[i].clone()
+                    quat_dot = torch.sum(target_quat * ee_quat[i])
+                    if quat_dot < 0:
+                        target_quat = -target_quat
+                        quat_dot = -quat_dot
+                    ori_err = 1.0 - quat_dot
+                    dist = torch.norm(ee_pos[i] - target_pos)
+
+                    if int(self.state_timer[i].item()) % 10 == 1:
+                        print(f"[DBG APPROACH env={i}] "
+                              f"ee_pos={ee_pos[i].tolist()} "
+                              f"target={target_pos.tolist()} "
+                              f"dist={dist.item():.4f} ori_err={ori_err.item():.4f} "
+                              f"ee_quat={ee_quat[i].tolist()} "
+                              f"tgt_quat={target_quat.tolist()} "
+                              f"live_valid={live_valid}")
+
+                    if dist < 0.05 and ori_err < 0.05:
                         self.state[i] = self.DESCEND_CUBE
                         self.state_timer[i] = 0
                         self.lock_yaw[i] = cube_yaw.squeeze(0)
 
                 elif self.state[i] == self.DESCEND_CUBE:
-                    tool_target_pos = live_source_pos.clone()
-                    tool_target_pos[2] = live_source_pos[2] + (cube_z_size / 2.0) + 0.01
-                    target_pos = tool_target_pos
+                    # SIMPLIFIED TEST: Hardcode target position (lower Z)
+                    target_pos = torch.tensor([0.5, 0.0, 0.15], device=self.device)
+                    # Align orientation to the captured downward pose
+                    target_quat = self.idle_quat[i].clone()
+
                     gripper_cmd = 1.0
-                    if torch.abs(ee_pos[i, 2] - target_pos[2]) < 0.01:
+                    if torch.abs(ee_pos[i, 2] - target_pos[2]) < 0.03:
                         self.state[i] = self.GRASP
                         self.state_timer[i] = 0
 
                 elif self.state[i] == self.GRASP:
-                    tool_target_pos = live_source_pos.clone()
-                    tool_target_pos[2] = live_source_pos[2] + (cube_z_size / 2.0) - 0.002
-                    target_pos = tool_target_pos
+                    # SIMPLIFIED TEST: Hardcode target position (same Z as descend)
+                    target_pos = torch.tensor([0.5, 0.0, 0.15], device=self.device)
                     gripper_cmd = -1.0
                     if int(self.attached_cube_idx[i].item()) == int(self.task_index[i].item()):
                         self.state[i] = self.LIFT
@@ -279,7 +317,7 @@ class StackingStateMachine:
                     gripper_cmd = 1.0
 
             state_i = int(self.state[i].item())
-            if state_i >= 0 and state_i not in [self.GRASP, self.RELEASE] and self.state_timer[i] > 150:
+            if state_i >= 0 and state_i not in [self.GRASP, self.RELEASE] and self.state_timer[i] > 400:
                 print(f"[Env {i}] !!! STATE {state_i} TIMEOUT !!! Forcing transition. (server.py)")
                 if state_i == self.APPROACH_CUBE:
                     self.state[i] = self.DESCEND_CUBE
@@ -293,23 +331,11 @@ class StackingStateMachine:
                     self.state[i] = self.RELEASE
                 self.state_timer[i] = 0
 
-            target_yaw = torch.tensor([0.0], device=self.device)
-            if self.task_index[i] < self.num_tasks_per_env[i]:
-                if self.state[i] == self.APPROACH_CUBE:
-                    cube_name = self.cube_names[self.task_index[i].item()]
-                    cube_quat_w = self.scene[cube_name].data.root_quat_w[i]
-                    _, _, cube_yaw = math_utils.euler_xyz_from_quat(cube_quat_w.unsqueeze(0))
-                    target_yaw = cube_yaw.squeeze(0)
-                elif self.state[i] == -1:
-                    target_yaw = torch.tensor([0.0], device=self.device)
-                else:
-                    target_yaw = self.lock_yaw[i]
-
-            target_quat = math_utils.quat_from_euler_xyz(
-                torch.tensor([0.0], device=self.device),
-                torch.tensor([1.5707], device=self.device),
-                target_yaw,
-            ).to(self.device).squeeze(0)
+            # If target_quat was not already set by the state block above
+            # (e.g. idle, APPROACH_TARGET, LIFT, etc.), use the downward orientation.
+            if target_quat is None:
+                target_quat = self.idle_quat[i].clone()
+            # Ensure shortest-arc quaternion
             quat_dot = torch.sum(target_quat * ee_quat[i])
             if quat_dot < 0:
                 target_quat = -target_quat

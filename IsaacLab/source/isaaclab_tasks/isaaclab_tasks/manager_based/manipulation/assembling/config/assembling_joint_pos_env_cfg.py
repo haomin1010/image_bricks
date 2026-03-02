@@ -43,8 +43,9 @@ def _build_aligned_cube_poses(
     source_pick_pos_x: float,
     source_pick_pos_y: float,
 ) -> list[list[float]]:
+    visible_z = cube_size / 2.0
     aligned_poses: list[list[float]] = [
-        [source_pick_pos_x, source_pick_pos_y, cube_size / 2.0, 1.0, 0.0, 0.0, 0.0]
+        [source_pick_pos_x, source_pick_pos_y, visible_z, 1.0, 0.0, 0.0, 0.0]
     ]
     if max_cubes <= 1:
         return aligned_poses
@@ -62,11 +63,18 @@ def _build_aligned_cube_poses(
     y0 = hidden_center_y - (rows - 1) * spacing / 2.0
 
     for hidden_idx in range(num_hidden):
-        row = hidden_idx // cols
-        col = hidden_idx % cols
-        x = x0 + col * spacing
-        y = y0 + row * spacing
-        aligned_poses.append([x, y, hidden_z, 1.0, 0.0, 0.0, 0.0])
+        # Keep cube_1/cube_2/cube_3 visible on table, aligned in one row (same y).
+        if hidden_idx < 2:
+            x = source_pick_pos_x + float(hidden_idx + 1) * spacing
+            y = source_pick_pos_y
+            z = visible_z
+        else:
+            row = hidden_idx // cols
+            col = hidden_idx % cols
+            x = x0 + col * spacing
+            y = y0 + row * spacing
+            z = hidden_z
+        aligned_poses.append([x, y, z, 1.0, 0.0, 0.0, 0.0])
     return aligned_poses
 
 
@@ -123,8 +131,9 @@ def _configure_cubes(
     resolved_max_cubes = _resolve_max_cubes(max_cubes)
     cube_names = _build_cube_names(resolved_max_cubes)
     half_width = grid_size_for_source * cell_size / 2.0
-    source_pick_pos_x = grid_origin[0] + half_width + cell_size / 2.0
-    source_pick_pos_y = grid_origin[1] - half_width
+    # Move source pile beside the grid at optimal reach distance (X=0.5)
+    source_pick_pos_x = grid_origin[0]
+    source_pick_pos_y = grid_origin[1] - half_width - cell_size / 2.0
 
     blue_usd = scene_cfg.resolve_asset_path(
         local_rel="Props/Blocks/blue_block.usd",
@@ -181,12 +190,13 @@ def _place_cubes_event(
     else:
         grid_origin = [0.5, 0.0, 0.001]
         cell_size = 0.056
-        grid_size = len(resolved_cube_names)
+    grid_size = len(resolved_cube_names)
 
     source_size = int(source_grid_size) if source_grid_size is not None else int(grid_size)
     half_width = source_size * cell_size / 2.0
-    source_pick_pos_x = grid_origin[0] + half_width + cell_size / 2.0
-    source_pick_pos_y = grid_origin[1] - half_width
+    # Move source pile beside the grid at optimal reach distance (X=0.5)
+    source_pick_pos_x = grid_origin[0]
+    source_pick_pos_y = grid_origin[1] - half_width - cell_size / 2.0
     aligned_poses = _build_aligned_cube_poses(
         max_cubes=len(resolved_cube_names),
         cube_size=float(cube_size),

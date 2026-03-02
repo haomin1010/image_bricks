@@ -7,7 +7,7 @@ import torch
 from .state_machine import StackingStateMachine
 
 # Isaac Lab and Gym imports will be deferred inside the Actor to ensure
-# they are only loaded in the process that has the simulation_app.
+# they are only loaded in the process that has the simulation_app. 
 
 class VagenStackExecutionManager:
     """Server-side execution manager for stack task control."""
@@ -30,6 +30,7 @@ class VagenStackExecutionManager:
         self.device = env.unwrapped.device
         self.ik_lambda_val = ik_lambda_val
         self._step_initial_task_idx: dict[int, dict[str, Any]] = {}
+        self._step_count: int = 0  # global sim-step counter for torque logging
 
         default_max_tasks = len(self.cube_names) if len(self.cube_names) > 0 else 8
         resolved_max_tasks = (
@@ -47,6 +48,9 @@ class VagenStackExecutionManager:
             grid_origin=list(grid_origin),
             cell_size=float(cell_size),
         )
+        # Provide a direct env reference so the state machine can sync the
+        # suction controller's attached_cube_idx on every step.
+        self.sm._env_unwrapped = self.env.unwrapped
 
         # Lazy import to avoid importing task modules before Isaac app startup.
         from isaaclab_tasks.manager_based.manipulation.assembling import mdp
@@ -213,6 +217,20 @@ class VagenStackExecutionManager:
     def step(self, obs: dict):
         actions = self.compute_joint_actions(obs)
         obs, _, _, _, _ = self.env.step(actions)
+        self._step_count += 1
+        # Print joint torques every 50 sim steps to avoid log spam.
+        if self._step_count % 50 == 0:
+            try:
+                robot = self.env.unwrapped.scene["robot"]
+                torques = robot.data.applied_torque  # shape: (num_envs, num_joints)
+                torque_str = ", ".join(
+                    f"[env{i}]" + str([round(v, 4) for v in torques[i].tolist()])
+                    for i in range(torques.shape[0])
+                )
+                print(f"[TORQUE step={self._step_count}] applied_torque (Nm): {torque_str}")
+                print(f"Torque: {robot.data.applied_torque.cpu().numpy()}")
+            except Exception as e:
+                print(f"[TORQUE] Failed to read applied_torque: {e}")
         return obs
 
     def close(self):
