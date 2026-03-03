@@ -7,6 +7,7 @@ import copy
 import json
 import logging
 import os
+import shlex
 
 # --- Proxy Fix: Ensure local addresses bypass proxy for local SGLang
 # Avoid removing global proxy envs (they're needed for remote downloads).
@@ -32,7 +33,7 @@ from vagen.envs.registry import get_env_cls
 from vagen.evaluate.runner import run_eval_parallel, NORMAL_FINISH_REASONS
 from vagen.evaluate.utils.seeding_utils import generate_seeds_for_spec
 from vagen.evaluate.utils.summary_utils import write_rollouts_summary_from_dump
-DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "conf", "evaluate.yaml")
+_FALLBACK_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "conf", "evaluate.yaml")
 
 
 logger = logging.getLogger("view_suite.run_eval")
@@ -316,7 +317,7 @@ def main() -> None:
         ray.init(namespace="vagen_training", ignore_reinit_error=True)
 
     args = _parse_args()
-    cfg_path = args.config or DEFAULT_CONFIG_PATH
+    cfg_path = args.config or os.environ.get("VAGEN_EVAL_CONFIG") or _FALLBACK_CONFIG_PATH
     cfg_path = os.path.abspath(cfg_path)
     if not os.path.exists(cfg_path):
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
@@ -348,20 +349,83 @@ def main() -> None:
                 # Start Isaac server in dedicated process
                 server_script = os.path.join(os.path.dirname(__file__), "..", "server", "start_isaac_server.py")
                 server_script = os.path.abspath(server_script)
+                # Allow selecting a different Isaac device without editing code.
+                # Example: DEVICE=cuda:0 (default), DEVICE=cuda:1
+                isaac_device = os.environ.get("DEVICE", "cuda:0")
+
+                def _env_int(name: str, default: int) -> int:
+                    raw = (os.environ.get(name) or "").strip()
+                    if raw == "":
+                        return int(default)
+                    try:
+                        return int(raw)
+                    except Exception:
+                        return int(default)
+
+                def _env_bool(name: str, default: bool = False) -> bool:
+                    raw = (os.environ.get(name) or "").strip().lower()
+                    if raw == "":
+                        return bool(default)
+                    if raw in {"1", "true", "yes", "y", "on"}:
+                        return True
+                    if raw in {"0", "false", "no", "n", "off"}:
+                        return False
+                    return bool(default)
+
+                # Default to headless on servers/SSH sessions that don't have a display.
+                # Can be overridden via ISAAC_HEADLESS=0/1.
+                isaac_headless_env = (os.environ.get("ISAAC_HEADLESS") or "").strip().lower()
+                want_headless = False
+                if isaac_headless_env in {"1", "true", "yes", "y", "on"}:
+                    want_headless = True
+                elif isaac_headless_env in {"0", "false", "no", "n", "off"}:
+                    want_headless = False
+                else:
+                    want_headless = not bool(os.environ.get("DISPLAY"))
+
+                # Choose CUDA_VISIBLE_DEVICES for the Isaac server.
+                # IMPORTANT: The previous hard-coded "7" will break single-GPU machines
+                # by hiding all GPUs from CUDA/Isaac (-> "no CUDA-capable device").
+                isaac_cvd = os.environ.get("ISAAC_CUDA_VISIBLE_DEVICES")
+                if isaac_cvd is None or str(isaac_cvd).strip() == "":
+                    isaac_cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                if isaac_cvd is None or str(isaac_cvd).strip() == "":
+                    isaac_cvd = "0"
+
+                isaac_num_envs = _env_int("ISAAC_SERVER_NUM_ENVS", 1)
+                isaac_task = (os.environ.get("ISAAC_SERVER_TASK") or "").strip() or "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0"
+                isaac_record = _env_bool("ISAAC_SERVER_RECORD", False)
+                isaac_video_length = _env_int("ISAAC_SERVER_VIDEO_LENGTH", 0)
+                isaac_video_interval = _env_int("ISAAC_SERVER_VIDEO_INTERVAL", 0)
+                isaac_ik_lambda_val = (os.environ.get("ISAAC_SERVER_IK_LAMBDA_VAL") or "").strip()
+                isaac_extra_args = (os.environ.get("ISAAC_SERVER_EXTRA_ARGS") or "").strip()
+                isaac_extra_argv = shlex.split(isaac_extra_args) if isaac_extra_args else []
+
                 cmd = [
                     sys.executable,
                     server_script,
-                    "--num-envs", "1",
-                    # TODO:
-                    "--device", "cuda:0",
-                    "--task", "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
-                    "--headless"
+                    "--num-envs",
+                    str(isaac_num_envs),
+                    "--device", str(isaac_device),
+                    "--task",
+                    str(isaac_task),
                 ]
+                if want_headless:
+                    cmd.append("--headless")
+                if isaac_record:
+                    cmd.append("--record")
+                if isaac_video_length > 0:
+                    cmd.extend(["--video-length", str(isaac_video_length)])
+                if isaac_video_interval > 0:
+                    cmd.extend(["--video-interval", str(isaac_video_interval)])
+                if isaac_ik_lambda_val:
+                    cmd.extend(["--ik-lambda-val", str(isaac_ik_lambda_val)])
+                if isaac_extra_argv:
+                    cmd.extend(isaac_extra_argv)
 
                 env = os.environ.copy()
                 # Server will auto-connect to the same Ray cluster
-                # Run Isaac on GPU7 (exclusive for Isaac, as GPU0 is full)
-                env["CUDA_VISIBLE_DEVICES"] = "7"
+                env["CUDA_VISIBLE_DEVICES"] = str(isaac_cvd)
                 
                 print(f">>> Starting Isaac server in foreground (logs will print here): {' '.join(cmd)}")
                 # Start Isaac server as a child process that inherits stdout/stderr
@@ -402,9 +466,14 @@ def main() -> None:
                 if s.connect_ex(('127.0.0.1', int(port))) != 0:
                     print(f">>> SGLang server not detected on port {port}. Starting it...")
                     model_path = backend_cfg.get("model", "Qwen/Qwen2.5-VL-3B-Instruct")
-                    # Use GPUs 0,1,2,3 for SGLang. GPU 1 will be shared with Isaac (as requested).
+                    # Select GPUs for SGLang (override with SGLANG_CUDA_VISIBLE_DEVICES).
                     env = os.environ.copy()
-                    env["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+                    sglang_cvd = os.environ.get("SGLANG_CUDA_VISIBLE_DEVICES")
+                    if sglang_cvd is None or str(sglang_cvd).strip() == "":
+                        sglang_cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+                    if sglang_cvd is None or str(sglang_cvd).strip() == "":
+                        sglang_cvd = "0"
+                    env["CUDA_VISIBLE_DEVICES"] = str(sglang_cvd)
 
                     # Determine requested tp from backend_cfg if present, otherwise use number of GPUs.
                     try:

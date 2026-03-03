@@ -76,7 +76,7 @@ class IsaacManagedEnvConfig:
     success_reward: float = 1.0
 
     # Dataset
-    dataset_root: str = "/mnt/data/image_bricks/IsaacLab/scripts/data_gen/output_snapshots"
+    dataset_root: str = "/mnt/data/image_bricks/assets/snapshots"
 
 
 _CONFIG_FIELDS = {f.name for f in fields(IsaacManagedEnvConfig)}
