@@ -1,12 +1,12 @@
-# 文件名: run_batch.py
 import os
 import subprocess
 import time
 import glob
+import argparse
 
-def run_batch():
+def run_batch(category):
     # 1. 设置路径
-    json_folder = "convex_json_batch"
+    json_folder = os.path.join("ground_truth", category)
     script_name = "batch_gen.py"
     
     # 2. 获取所有 JSON 文件
@@ -16,7 +16,7 @@ def run_batch():
         print(f"Error: No JSON files found in {json_folder}")
         return
 
-    print(f"Found {len(json_files)} files to process.")
+    print(f"Found {len(json_files)} files to process in {category}.")
 
     # 3. 循环执行
     for i, json_path in enumerate(json_files):
@@ -24,11 +24,12 @@ def run_batch():
         
         print(f"\n>>> [{i+1}/{len(json_files)}] Processing: {filename}")
         
-        # 构建命令：python batch_gen.py --enable_cameras --json_file convex_01.json
+        # 构建命令：python batch_gen.py --enable_cameras --type small --json_file 00001.json
         cmd = [
             "python", script_name,
             "--enable_cameras",
-            "--json_file", filename  # 传递文件名给主脚本
+            "--type", category,
+            "--json_file", filename
         ]
         
         try:
@@ -40,4 +41,9 @@ def run_batch():
             print(f"Failed to process {filename}: {e}")
         
 if __name__ == "__main__":
-    run_batch()
+    parser = argparse.ArgumentParser(description="Run batch generation script.")
+    parser.add_argument("--type", type=str, choices=["small", "large"], required=True, 
+                        help="Data category to process ('small' or 'large').")
+    args_cli = parser.parse_args()
+    
+    run_batch(args_cli.type)

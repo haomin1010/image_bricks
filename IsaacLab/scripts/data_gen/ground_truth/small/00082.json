@@ -1,0 +1,16 @@
+{
+  "dimensions": {
+    "length": 8,
+    "width": 8,
+    "height": 8
+  },
+  "total_blocks": 1,
+  "blocks": [
+    {
+      "id": 1,
+      "x": 0,
+      "y": 6,
+      "z": 0
+    }
+  ]
+}
