@@ -25,6 +25,7 @@ cd Isaaclab
 ```bash
 cd VAGEN
 pip install -e .
+git submodule update --init --recursive
 cd verl
 USE_MEGATRON=0 bash scripts/install_vllm_sglang_mcore.sh
 pip install --no-deps -e .
@@ -53,4 +54,12 @@ bash VAGEN/examples/isaac/train_grpo_qwen25vl3b.sh
 
 ```
 bash VAGEN/examples/evaluate/isaac/run_eval.sh
+```
+
+## Test
+
+### 1.test isaaclab env
+
+```
+python VAGEN/vagen/server/test_ray_grasp.py    --one-click-kill-existing-server true   --one-click-keep-ray true   --ray-head-log outputs/compare/ray_head.log   --server-num-envs 1   --server-device cuda:0   --server-task multipicture_assembling_from_begin   --server-record true   --server-video-length 0   --server-video-interval 0   --server-log outputs/compare/isaac_server_chain_test_headless.log   --seed 0   --goals "2,2,0;2,3,0;3,3,0" --server-headless true --auto-start true
 ```

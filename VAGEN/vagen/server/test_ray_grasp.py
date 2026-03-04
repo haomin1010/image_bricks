@@ -36,7 +36,7 @@ from ray.exceptions import GetTimeoutError
 
 
 DEFAULT_TASK = "multipicture_assembling_from_begin"
-DEFAULT_GOALS = "2,2,0;3,2,0;3,3,0"
+DEFAULT_GOALS = "2,2,0"
 DEFAULT_CAMERAS = "0,1,2,3,4"
 DEFAULT_RAY_HEAD_LOG = "outputs/ray_test.log"
 
@@ -424,6 +424,9 @@ def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
             reset_paths = dump_payload_images(reset_resp, image_output_dir, stage="reset")
             summary["reset_image_paths"] = reset_paths
             print(f"[INFO] Saved reset images: {len(reset_paths)} -> {image_output_dir}")
+        if args.post_reset_delay_s > 0:
+            print(f"[INFO] Waiting {args.post_reset_delay_s:.1f}s after reset before sending first action...")
+            time.sleep(float(args.post_reset_delay_s))
 
         for idx, goal in enumerate(goals):
             method_name = "remote_step"
@@ -545,6 +548,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--seed", type=int, default=0, help="Seed used for remote_reset.")
+    parser.add_argument(
+        "--post-reset-delay-s",
+        type=float,
+        default=10.0,
+        help="Delay in seconds after remote_reset before sending first action.",
+    )
     parser.add_argument(
         "--goals",
         type=str,
