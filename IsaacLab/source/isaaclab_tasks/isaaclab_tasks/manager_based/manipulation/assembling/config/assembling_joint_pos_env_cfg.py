@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import copy
-import math
 import os
 
 import torch
@@ -36,6 +35,16 @@ def _build_cube_names(max_cubes: int) -> list[str]:
     return [f"cube_{i + 1}" for i in range(int(max_cubes))]
 
 
+def _resolve_source_pick_xy(*, grid_origin, cell_size: float, source_grid_size: int) -> tuple[float, float]:
+    half_width = source_grid_size * cell_size / 2.0
+    base_x = float(grid_origin[0])
+    base_y = float(grid_origin[1] - half_width - cell_size / 2.0)
+    default_y = base_y + float(os.getenv("VAGEN_SOURCE_PICK_HIDE_OFFSET_Y", "-0.20"))
+    src_x = float(os.getenv("VAGEN_SOURCE_PICK_X", str(base_x)))
+    src_y = float(os.getenv("VAGEN_SOURCE_PICK_Y", str(default_y)))
+    return src_x, src_y
+
+
 def _build_aligned_cube_poses(
     *,
     max_cubes: int,
@@ -50,31 +59,17 @@ def _build_aligned_cube_poses(
     if max_cubes <= 1:
         return aligned_poses
 
-    hidden_center_x = float(os.getenv("VAGEN_CUBE_PARKING_CENTER_X", "-0.60"))
-    hidden_center_y = float(os.getenv("VAGEN_CUBE_PARKING_CENTER_Y", "0.00"))
-    hidden_z = float(os.getenv("VAGEN_CUBE_PARKING_Z", "-1.00"))
     default_spacing = max(float(cube_size) + 0.01, 0.055)
-    spacing = float(os.getenv("VAGEN_CUBE_PARKING_SPACING", str(default_spacing)))
+    spacing = float(os.getenv("VAGEN_SOURCE_QUEUE_SPACING", str(default_spacing)))
+    cols = max(1, int(os.getenv("VAGEN_SOURCE_QUEUE_COLS", "4")))
+    source_z = float(os.getenv("VAGEN_SOURCE_QUEUE_Z", str(visible_z)))
 
-    num_hidden = max_cubes - 1
-    cols = max(1, int(math.ceil(math.sqrt(num_hidden))))
-    rows = int(math.ceil(num_hidden / cols))
-    x0 = hidden_center_x - (cols - 1) * spacing / 2.0
-    y0 = hidden_center_y - (rows - 1) * spacing / 2.0
-
-    for hidden_idx in range(num_hidden):
-        # Keep cube_1/cube_2/cube_3 visible on table, aligned in one row (same y).
-        if hidden_idx < 2:
-            x = source_pick_pos_x + float(hidden_idx + 1) * spacing
-            y = source_pick_pos_y
-            z = visible_z
-        else:
-            row = hidden_idx // cols
-            col = hidden_idx % cols
-            x = x0 + col * spacing
-            y = y0 + row * spacing
-            z = hidden_z
-        aligned_poses.append([x, y, z, 1.0, 0.0, 0.0, 0.0])
+    for queue_rank in range(max_cubes - 1):
+        col = queue_rank % cols
+        row = queue_rank // cols
+        x = source_pick_pos_x + float(col + 1) * spacing
+        y = source_pick_pos_y + float(row) * spacing
+        aligned_poses.append([x, y, source_z, 1.0, 0.0, 0.0, 0.0])
     return aligned_poses
 
 
@@ -130,10 +125,11 @@ def _configure_cubes(
 ) -> list[str]:
     resolved_max_cubes = _resolve_max_cubes(max_cubes)
     cube_names = _build_cube_names(resolved_max_cubes)
-    half_width = grid_size_for_source * cell_size / 2.0
-    # Move source pile beside the grid at optimal reach distance (X=0.5)
-    source_pick_pos_x = grid_origin[0]
-    source_pick_pos_y = grid_origin[1] - half_width - cell_size / 2.0
+    source_pick_pos_x, source_pick_pos_y = _resolve_source_pick_xy(
+        grid_origin=grid_origin,
+        cell_size=float(cell_size),
+        source_grid_size=int(grid_size_for_source),
+    )
 
     blue_usd = scene_cfg.resolve_asset_path(
         local_rel="Props/Blocks/blue_block.usd",
@@ -193,10 +189,11 @@ def _place_cubes_event(
     grid_size = len(resolved_cube_names)
 
     source_size = int(source_grid_size) if source_grid_size is not None else int(grid_size)
-    half_width = source_size * cell_size / 2.0
-    # Move source pile beside the grid at optimal reach distance (X=0.5)
-    source_pick_pos_x = grid_origin[0]
-    source_pick_pos_y = grid_origin[1] - half_width - cell_size / 2.0
+    source_pick_pos_x, source_pick_pos_y = _resolve_source_pick_xy(
+        grid_origin=grid_origin,
+        cell_size=float(cell_size),
+        source_grid_size=source_size,
+    )
     aligned_poses = _build_aligned_cube_poses(
         max_cubes=len(resolved_cube_names),
         cube_size=float(cube_size),

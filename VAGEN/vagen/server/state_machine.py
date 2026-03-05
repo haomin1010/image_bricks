@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import torch
+import os
 
-import isaaclab.utils.math as math_utils
+import torch
 
 # Isaac Lab and Gym imports will be deferred inside the Actor to ensure
 # they are only loaded in the process that has the simulation_app. 
@@ -59,10 +59,13 @@ class StackingStateMachine:
         # Magic-suction attachment state (updated by IsaacLab execution layer).
         self.attached_cube_idx = torch.full((num_envs,), -1, dtype=torch.long, device=device)
         
-        # 记录方块抓取位置：基于网格动态计算（放在网格侧边最佳工作半径 X=0.5 处）
+        # Hidden source pick region (can be overridden by env vars).
         half_width = (grid_size * cell_size) / 2.0
-        src_x = grid_origin[0]
-        src_y = grid_origin[1] - half_width - cell_size / 2.0
+        base_src_x = float(grid_origin[0])
+        base_src_y = float(grid_origin[1] - half_width - cell_size / 2.0)
+        default_src_y = base_src_y + float(os.getenv("VAGEN_SOURCE_PICK_HIDE_OFFSET_Y", "-0.20"))
+        src_x = float(os.getenv("VAGEN_SOURCE_PICK_X", str(base_src_x)))
+        src_y = float(os.getenv("VAGEN_SOURCE_PICK_Y", str(default_src_y)))
         self.source_pick_pos = torch.tensor([src_x, src_y], device=device)
 
         
@@ -98,7 +101,7 @@ class StackingStateMachine:
                     self.target_positions[env_id, start_idx + t_idx] = torch.tensor(val, device=self.device)
             # update count
             self.num_tasks_per_env[env_id] = start_idx + write_count
-            # mark new task available for teleport logic
+            # mark new task available for external status reporting
             self.has_pending_targets[env_id] = True
             self.new_task_available[env_id] = True
             self.new_task_index[env_id] = start_idx
@@ -196,68 +199,47 @@ class StackingStateMachine:
                 target_pos = self.idle_pos[i].clone()
                 gripper_cmd = 1.0
             else:
-                cube_name = self.cube_names[self.task_index[i].item()]
-                cube_asset = self.scene[cube_name]
-                cube_pos_world = cube_asset.data.root_pos_w[i]
-                cube_quat_w = cube_asset.data.root_quat_w[i]
-                _, _, cube_yaw = math_utils.euler_xyz_from_quat(cube_quat_w.unsqueeze(0))
-                # Use live cube pose for grasp/descend targets. Fall back to nominal
-                # source point if the cube pose is temporarily invalid.
-                live_source_pos = cube_pos_world.clone()
-                live_valid = bool(torch.isfinite(live_source_pos).all().item())
-                if live_valid:
-                    live_z = float(live_source_pos[2].item())
-                    if live_z < -0.2 or live_z > 1.5:
-                        live_valid = False
-                if not live_valid:
-                    live_source_pos = source_pick_fallback.clone()
-
-                target_world_pos = self.target_positions[i, self.task_index[i]].clone()
-
-                if self.state[i] == self.APPROACH_CUBE:
-                    # SIMPLIFIED TEST: Hold original captured idle_pos completely still
-                    # to test if PD control can counteract gravity statically.
+                cube_idx = int(self.task_index[i].item())
+                if cube_idx < 0 or cube_idx >= len(self.cube_names):
                     target_pos = self.idle_pos[i].clone()
                     gripper_cmd = 1.0
+                    target_world_pos = self.idle_pos[i].clone()
+                    live_source_pos = source_pick_fallback.clone()
+                else:
+                    cube_name = self.cube_names[cube_idx]
+                    cube_asset = self.scene[cube_name]
+                    live_source_pos = cube_asset.data.root_pos_w[i].clone()
+                    live_valid = bool(torch.isfinite(live_source_pos).all().item())
+                    if live_valid:
+                        live_z = float(live_source_pos[2].item())
+                        if live_z < -0.2 or live_z > 1.5:
+                            live_valid = False
+                    if not live_valid:
+                        live_source_pos = source_pick_fallback.clone()
+                    target_world_pos = self.target_positions[i, self.task_index[i]].clone()
 
-                    # Use the captured idle orientation (actual TCP quat at reset pose).
-                    # This guarantees near-zero initial ori_err so IK focuses on translation.
+                if self.state[i] == self.APPROACH_CUBE:
+                    target_pos = live_source_pos.clone()
+                    target_pos[2] = safe_z
+                    gripper_cmd = 1.0
                     target_quat = self.idle_quat[i].clone()
-                    quat_dot = torch.sum(target_quat * ee_quat[i])
-                    if quat_dot < 0:
-                        target_quat = -target_quat
-                        quat_dot = -quat_dot
-                    ori_err = 1.0 - quat_dot
-                    dist = torch.norm(ee_pos[i] - target_pos)
-
-                    if int(self.state_timer[i].item()) % 10 == 1:
-                        print(f"[DBG APPROACH env={i}] "
-                              f"ee_pos={ee_pos[i].tolist()} "
-                              f"target={target_pos.tolist()} "
-                              f"dist={dist.item():.4f} ori_err={ori_err.item():.4f} "
-                              f"ee_quat={ee_quat[i].tolist()} "
-                              f"tgt_quat={target_quat.tolist()} "
-                              f"live_valid={live_valid}")
-
-                    if dist < 0.05 and ori_err < 0.05:
+                    dist_xy = torch.norm(ee_pos[i, :2] - target_pos[:2])
+                    if dist_xy < 0.02:
                         self.state[i] = self.DESCEND_CUBE
                         self.state_timer[i] = 0
-                        self.lock_yaw[i] = cube_yaw.squeeze(0)
 
                 elif self.state[i] == self.DESCEND_CUBE:
-                    # SIMPLIFIED TEST: Hardcode target position (lower Z)
-                    target_pos = torch.tensor([0.5, 0.0, 0.15], device=self.device)
-                    # Align orientation to the captured downward pose
+                    target_pos = live_source_pos.clone()
+                    target_pos[2] = live_source_pos[2] + (cube_z_size / 2.0) + 0.005
                     target_quat = self.idle_quat[i].clone()
-
                     gripper_cmd = 1.0
-                    if torch.abs(ee_pos[i, 2] - target_pos[2]) < 0.03:
+                    if torch.norm(ee_pos[i, :2] - target_pos[:2]) < 0.01 and torch.abs(ee_pos[i, 2] - target_pos[2]) < 0.01:
                         self.state[i] = self.GRASP
                         self.state_timer[i] = 0
 
                 elif self.state[i] == self.GRASP:
-                    # SIMPLIFIED TEST: Hardcode target position (same Z as descend)
-                    target_pos = torch.tensor([0.5, 0.0, 0.15], device=self.device)
+                    target_pos = live_source_pos.clone()
+                    target_pos[2] = live_source_pos[2] + (cube_z_size / 2.0) + 0.005
                     gripper_cmd = -1.0
                     if int(self.attached_cube_idx[i].item()) == int(self.task_index[i].item()):
                         self.state[i] = self.LIFT

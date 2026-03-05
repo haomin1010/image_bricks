@@ -62,9 +62,6 @@ class VagenStackExecutionManager:
         self.env.unwrapped._vagen_magic_suction_active_cube_idx = self.sm.task_index
         self.env.unwrapped._vagen_magic_suction_cube_names = tuple(self.cube_names)
         self.env.unwrapped._vagen_magic_suction_cube_size = float(self.cube_size)
-        self.env.unwrapped._vagen_new_task_available = self.sm.new_task_available
-        self.env.unwrapped._vagen_new_task_index = self.sm.new_task_index
-        self.env.unwrapped._vagen_source_pick_pos_xy = self.sm.source_pick_pos
         if getattr(self.env.unwrapped, "_vagen_magic_suction_controller", None) is None:
             print(
                 "[WARN]: Magic suction event controller was not initialized on startup. "

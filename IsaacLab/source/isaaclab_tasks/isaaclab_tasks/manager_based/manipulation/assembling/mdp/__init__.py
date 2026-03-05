@@ -12,5 +12,4 @@ from .magic_suction import *  # noqa: F401, F403
 from .observations import *  # noqa: F401, F403
 from .pinocchio_actions import *  # noqa: F401, F403
 from .reward import *  # noqa: F401, F403
-from .teleport import *  # noqa: F401, F403
 from .terminations import *  # noqa: F401, F403

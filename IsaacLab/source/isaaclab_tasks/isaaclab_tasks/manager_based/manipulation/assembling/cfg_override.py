@@ -221,10 +221,6 @@ class AssemblingCfgOverride:
             magic_suction_controller.params["max_cubes"] = self.max_cubes
             magic_suction_controller.params["cube_size"] = self.cube_size
             magic_suction_controller.params["ee_body_name"] = self.ee_body_name
-        teleport_pending_cubes = getattr(events, "teleport_pending_cubes", None) if events is not None else None
-        if teleport_pending_cubes is not None and hasattr(teleport_pending_cubes, "params"):
-            teleport_pending_cubes.params["max_cubes"] = self.max_cubes
-            teleport_pending_cubes.params["cube_size"] = self.cube_size
 
         gripper_action = getattr(getattr(env_cfg, "actions", None), "gripper_action", None)
         if gripper_action is not None and hasattr(gripper_action, "close_command_threshold"):

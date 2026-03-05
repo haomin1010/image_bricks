@@ -32,7 +32,7 @@ def task_index_exceeds_max_cubes(
     env_unwrapped = getattr(env, "unwrapped", env)
     upper_bound = int(max_cubes)
 
-    for attr_name in ("_vagen_new_task_index", "_vagen_magic_suction_active_cube_idx"):
+    for attr_name in ("_vagen_magic_suction_active_cube_idx",):
         raw_indices = getattr(env_unwrapped, attr_name, None)
         if not isinstance(raw_indices, torch.Tensor) or raw_indices.numel() < env.num_envs:
             continue

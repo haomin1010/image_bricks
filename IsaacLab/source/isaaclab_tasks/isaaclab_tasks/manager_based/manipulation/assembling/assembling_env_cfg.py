@@ -371,15 +371,6 @@ class EventsCfg:
             "ee_body_name": ASSEMBLING_EE_BODY_NAME,
         },
     )
-    teleport_pending_cubes = EventTerm(
-        func=mdp.TeleportPendingCubesEvent,
-        mode="startup",
-        params={
-            "cube_name_prefix": "cube_",
-            "max_cubes": ASSEMBLING_MAX_CUBES,
-            "cube_size": float(os.getenv("VAGEN_CUBE_SIZE", "0.045")),
-        },
-    )
 
 
 @configclass

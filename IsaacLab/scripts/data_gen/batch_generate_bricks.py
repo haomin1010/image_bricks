@@ -27,9 +27,9 @@ def get_next_id(category_dir):
             
     return max_id + 1
 
-def generate_batch(category, num_samples, output_base="ground_truth"):
+def generate_batch(category, num_samples, output_base="../../../assets/dataset/ground_truth"):
     """批量生成指定数量和类别的数据"""
-    category_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), output_base, category)
+    category_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), output_base, category))
     os.makedirs(category_dir, exist_ok=True)
     
     start_id = get_next_id(category_dir)
@@ -47,6 +47,15 @@ def generate_batch(category, num_samples, output_base="ground_truth"):
         if category == "small":
             # For small: 1 to 10 blocks
             builder = SmallBricksBuilder(length=8, width=8, height=8)
+            num_blocks = random.randint(1, 10)
+            builder.generate_random_stable_bricks(num_blocks=num_blocks)
+            json_path = os.path.join(category_dir, file_name)
+            builder.save_coordinates_json(json_path)
+            actual_blocks = len(builder.grid.nonzero()[0])
+            
+        elif category == "small_size4":
+            # For small size4: 1 to 10 blocks in 4x4x4 grid
+            builder = SmallBricksBuilder(length=4, width=4, height=4)
             num_blocks = random.randint(1, 10)
             builder.generate_random_stable_bricks(num_blocks=num_blocks)
             json_path = os.path.join(category_dir, file_name)
@@ -87,9 +96,9 @@ def main():
     parser.add_argument(
         "--type", 
         type=str, 
-        choices=["small", "large"], 
+        choices=["small", "small_size4", "large"], 
         required=True,
-        help="The category of data to generate ('small' = 1-10 blocks, 'large' = >10 blocks)."
+        help="The category of data to generate ('small' = 1-10 blocks, 'small_size4' = 1-10 blocks in 4x4x4 grid, 'large' = >10 blocks)."
     )
     parser.add_argument(
         "--num", 
