@@ -45,13 +45,6 @@ class StackingStateMachine:
         self.RELEASE = 6
         self.ASCEND_TARGET = 8
         self.ASCEND_HOME = 9
-        self.DESCEND_FINAL_Z_OFFSET = 0.06
-        self.GRASP_X_BIAS = 0.025
-        self.GRASP_SETTLE_STEPS = 8
-        self.APPROACH_CUBE_STEPS = 40
-        self.DESCEND_CUBE_STEPS = 36
-        self.LIFT_STEPS = 40
-        self.APPROACH_TARGET_STEPS = 40
         self.state = torch.full((self.num_envs,), self.IDLE, dtype=torch.long, device=device)
         self.task_index = torch.zeros(self.num_envs, dtype=torch.long, device=device)
         self.state_timer = torch.zeros(self.num_envs, dtype=torch.long, device=device)
@@ -60,18 +53,24 @@ class StackingStateMachine:
         self.new_task_available = torch.zeros(self.num_envs, dtype=torch.bool, device=device)
         self.new_task_index = torch.full((self.num_envs,), -1, dtype=torch.long, device=device)
 
-        # Freeze pose state.
-        self.idle_pos = torch.zeros((self.num_envs, 3), device=device)
-        self.idle_quat = torch.zeros((self.num_envs, 4), device=device)
-        self.idle_pos_initialized = torch.zeros(self.num_envs, dtype=torch.bool, device=device)
         # Per-env frozen world target during GRASP, so gripper does not move while closing.
         self.grasp_hold_pos_w = torch.zeros((self.num_envs, 3), device=device)
         self.grasp_hold_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=device)
         self.release_hold_pos_w = torch.zeros((self.num_envs, 3), device=device)
 
     def set_env_targets(self, env_ids, targets):
-        """No-op in freeze mode; kept only for API compatibility."""
-        del env_ids, targets
+        env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long).flatten()
+        targets = torch.as_tensor(targets, device=self.device, dtype=self.target_positions.dtype).reshape(-1, 3)
+        n = min(env_ids.numel(), targets.shape[0])
+        env_ids = env_ids[:n]
+        targets = targets[:n]
+        task_slots = torch.clamp(self.task_index[env_ids].to(torch.long), 0, self.max_tasks - 1)
+        self.target_positions[env_ids, task_slots] = targets
+        self.num_tasks_per_env[env_ids] = torch.maximum(self.num_tasks_per_env[env_ids], task_slots + 1)
+        self.state[env_ids] = self.APPROACH_CUBE
+        self.state_timer[env_ids] = 0
+        self.new_task_available[env_ids] = True
+        self.new_task_index[env_ids] = task_slots
         return None
 
     def reset_envs(self, env_ids):
@@ -80,7 +79,6 @@ class StackingStateMachine:
         self.state_timer[env_ids] = 0
         self.new_task_available[env_ids] = False
         self.new_task_index[env_ids] = -1
-        self.idle_pos_initialized[env_ids] = False
         self.grasp_hold_valid[env_ids] = False
         self.release_hold_pos_w[env_ids] = 0.0
 
@@ -90,38 +88,8 @@ class StackingStateMachine:
     def reset_state(self, env_idx):
         self.state_timer[env_idx] = 0
 
-    def _extract_policy_obs(self, obs: dict) -> dict:
-        if not isinstance(obs, dict):
-            raise TypeError(f"Invalid observation container: {type(obs)}")
-        policy_obs = obs.get("policy", obs)
-        if not isinstance(policy_obs, dict):
-            raise TypeError(f"Invalid policy observation container: {type(policy_obs)}")
-        return policy_obs
-
-    def _capture_idle_pose_once(self, root_pos_w: torch.Tensor, root_quat_w: torch.Tensor) -> None:
-        new_idle_envs = ~self.idle_pos_initialized
-        if not torch.any(new_idle_envs):
-            return
-        num_new = int(new_idle_envs.sum().item())
-        # Idle hold pose defined in WORLD frame.
-        target_pos_w = torch.zeros((num_new, 3), device=self.device, dtype=root_pos_w.dtype)
-        target_pos_w[:, 0] = 0.5
-        target_pos_w[:, 1] = 0.0
-        target_pos_w[:, 2] = 0.45
-        target_quat_w = torch.zeros((num_new, 4), device=self.device, dtype=root_quat_w.dtype)
-        target_quat_w[:, 1] = 1.0
-        target_pos_root, target_quat_root = math_utils.subtract_frame_transforms(
-            root_pos_w[new_idle_envs],
-            root_quat_w[new_idle_envs],
-            target_pos_w,
-            target_quat_w,
-        )
-        self.idle_pos[new_idle_envs] = target_pos_root
-        self.idle_quat[new_idle_envs] = target_quat_root
-        self.idle_pos_initialized[new_idle_envs] = True
-
     def compute_ee_pose_targets(self, obs):
-        policy_obs = self._extract_policy_obs(obs)
+        policy_obs = obs.get("policy", obs)
         
         ee_pos_env = policy_obs.get("ee_pos")
         ee_quat_w = policy_obs.get("ee_quat")
@@ -135,8 +103,6 @@ class StackingStateMachine:
 
         # abs-IK action expects pose in robot root frame. Convert observed ee pose first.
         ee_pos_w = ee_pos_env + env_origin
-        ee_pos_root, _ = math_utils.subtract_frame_transforms(root_pos_w, root_quat_w, ee_pos_w, ee_quat_w)
-        self._capture_idle_pose_once(root_pos_w, root_quat_w)
 
         # Default hold target in WORLD frame.
         target_pos_w = torch.zeros((self.num_envs, 3), device=self.device, dtype=root_pos_w.dtype)
@@ -145,6 +111,7 @@ class StackingStateMachine:
         target_pos_w[:, 2] = 0.45
         target_quat_w = torch.zeros((self.num_envs, 4), device=self.device, dtype=root_quat_w.dtype)
         target_quat_w[:, 1] = 1.0
+        gripper_cmd_all = torch.ones((self.num_envs,), device=self.device)
 
         # Active cube-driven states.
         if cube_pos_w.ndim != 2 or cube_pos_w.shape[1] < 3 or (cube_pos_w.shape[1] % 3 != 0):
@@ -169,11 +136,11 @@ class StackingStateMachine:
                 )
             approach_cube_pos_w = cube_pos_w_reshaped[approach_env_ids, approach_cube_slots]
             approach_timer = self.state_timer[approach_env_ids].to(dtype=approach_cube_pos_w.dtype)
-            approach_alpha = torch.clamp((approach_timer + 1.0) / float(self.APPROACH_CUBE_STEPS), min=0.0, max=1.0)
+            approach_alpha = torch.clamp((approach_timer + 1.0) / float(40), min=0.0, max=1.0)
             target_pos_w[approach_env_ids, 0] = 0.5 + (approach_cube_pos_w[:, 0] - 0.5) * approach_alpha
             target_pos_w[approach_env_ids, 1] = 0.0 + approach_cube_pos_w[:, 1] * approach_alpha
             target_pos_w[approach_env_ids, 2] = 0.45
-            to_descend_cube_mask = self.state_timer[approach_env_ids] >= self.APPROACH_CUBE_STEPS
+            to_descend_cube_mask = self.state_timer[approach_env_ids] >= 40
             if torch.any(to_descend_cube_mask):
                 to_descend_cube_env_ids = approach_env_ids[to_descend_cube_mask]
                 self.state[to_descend_cube_env_ids] = self.DESCEND_CUBE
@@ -194,14 +161,14 @@ class StackingStateMachine:
                 )
             descend_cube_pos_w = cube_pos_w_reshaped[descend_env_ids, descend_cube_slots]
             target_pos_w[descend_env_ids, 0:2] = descend_cube_pos_w[:, 0:2]
-            target_pos_w[descend_env_ids, 0] = descend_cube_pos_w[:, 0] + self.GRASP_X_BIAS
+            target_pos_w[descend_env_ids, 0] = descend_cube_pos_w[:, 0] + 0.025
 
             descend_timer = self.state_timer[descend_env_ids].to(dtype=descend_cube_pos_w.dtype)
-            descend_alpha = torch.clamp((descend_timer + 1.0) / float(self.DESCEND_CUBE_STEPS), min=0.0, max=1.0)
-            descend_target_z = descend_cube_pos_w[:, 2] + self.DESCEND_FINAL_Z_OFFSET
+            descend_alpha = torch.clamp((descend_timer + 1.0) / float(36), min=0.0, max=1.0)
+            descend_target_z = descend_cube_pos_w[:, 2] + 0.06
             target_pos_w[descend_env_ids, 2] = 0.45 + (descend_target_z - 0.45) * descend_alpha
 
-            to_grasp_mask = self.state_timer[descend_env_ids] >= self.DESCEND_CUBE_STEPS
+            to_grasp_mask = self.state_timer[descend_env_ids] >= 36
             if torch.any(to_grasp_mask):
                 to_grasp_env_ids = descend_env_ids[to_grasp_mask]
                 to_grasp_cube_pos_w = descend_cube_pos_w[to_grasp_mask]
@@ -210,7 +177,7 @@ class StackingStateMachine:
                 self.grasp_hold_pos_w[to_grasp_env_ids, 0] = to_grasp_cube_pos_w[:, 0]
                 self.grasp_hold_pos_w[to_grasp_env_ids, 1] = to_grasp_cube_pos_w[:, 1]
                 self.grasp_hold_pos_w[to_grasp_env_ids, 2] = (
-                    to_grasp_cube_pos_w[:, 2] + self.DESCEND_FINAL_Z_OFFSET + 0.045
+                    to_grasp_cube_pos_w[:, 2] + 0.06 + 0.045
                 )
                 self.grasp_hold_valid[to_grasp_env_ids] = True
 
@@ -219,6 +186,7 @@ class StackingStateMachine:
         grasp_env_ids = torch.where(grasp_mask)[0]
         if grasp_env_ids.numel() > 0:
             target_pos_w[grasp_env_ids] = self.grasp_hold_pos_w[grasp_env_ids]
+            gripper_cmd_all[grasp_env_ids] = -1.0
             grasp_cube_slots = torch.clamp(self.task_index[grasp_env_ids].to(torch.long), min=0, max=max(0, num_obs_cubes - 1))
             grasp_cube_pos_w = cube_pos_w_reshaped[grasp_env_ids, grasp_cube_slots]
             grasp_cube_near_mask = torch.linalg.vector_norm(grasp_cube_pos_w - ee_pos_w[grasp_env_ids], dim=1) < 0.07
@@ -242,7 +210,7 @@ class StackingStateMachine:
                 grasp_gripper_engaged_mask = torch.zeros((grasp_env_ids.numel(),), dtype=torch.bool, device=self.device)
 
             # GRASP -> LIFT on grasp confirmation from observation.
-            grasp_wait_done_mask = self.state_timer[grasp_env_ids] >= self.GRASP_SETTLE_STEPS
+            grasp_wait_done_mask = self.state_timer[grasp_env_ids] >= 8
             grasp_confirmed_mask = torch.logical_and(
                 torch.logical_and(grasp_wait_done_mask, grasp_cube_near_mask), grasp_gripper_engaged_mask
             )
@@ -256,16 +224,17 @@ class StackingStateMachine:
         lift_mask = self.state == self.LIFT
         if torch.any(lift_mask):
             lift_env_ids = torch.where(lift_mask)[0]
+            gripper_cmd_all[lift_env_ids] = -1.0
             lift_cube_slots = torch.clamp(self.task_index[lift_env_ids].to(torch.long), 0, num_obs_cubes - 1)
             lift_cube_pos_w = cube_pos_w_reshaped[lift_env_ids, lift_cube_slots]
             lift_start_pos_w = self.grasp_hold_pos_w[lift_env_ids]
             lift_timer = self.state_timer[lift_env_ids].to(dtype=lift_start_pos_w.dtype)
-            lift_alpha = torch.clamp((lift_timer + 1.0) / float(self.LIFT_STEPS), min=0.0, max=1.0)
+            lift_alpha = torch.clamp((lift_timer + 1.0) / float(40), min=0.0, max=1.0)
             target_pos_w[lift_env_ids, 0:2] = lift_start_pos_w[:, 0:2] + (
                 lift_cube_pos_w[:, 0:2] - lift_start_pos_w[:, 0:2]
             ) * lift_alpha.unsqueeze(-1)
             target_pos_w[lift_env_ids, 2] = lift_start_pos_w[:, 2] + (0.45 - lift_start_pos_w[:, 2]) * lift_alpha
-            to_approach_target_mask = self.state_timer[lift_env_ids] >= self.LIFT_STEPS
+            to_approach_target_mask = self.state_timer[lift_env_ids] >= 40
             if torch.any(to_approach_target_mask):
                 to_approach_target_env_ids = lift_env_ids[to_approach_target_mask]
                 self.state[to_approach_target_env_ids] = self.APPROACH_TARGET
@@ -275,17 +244,18 @@ class StackingStateMachine:
         approach_target_mask = self.state == self.APPROACH_TARGET
         if torch.any(approach_target_mask):
             approach_target_env_ids = torch.where(approach_target_mask)[0]
+            gripper_cmd_all[approach_target_env_ids] = -1.0
             target_slot = torch.clamp(self.task_index[approach_target_env_ids].to(torch.long), 0, self.max_tasks - 1)
             goal_pos_w = self.target_positions[approach_target_env_ids, target_slot]
             approach_cube_slots = torch.clamp(self.task_index[approach_target_env_ids].to(torch.long), 0, num_obs_cubes - 1)
             approach_start_cube_pos_w = cube_pos_w_reshaped[approach_target_env_ids, approach_cube_slots]
             approach_timer = self.state_timer[approach_target_env_ids].to(dtype=goal_pos_w.dtype)
-            approach_alpha = torch.clamp((approach_timer + 1.0) / float(self.APPROACH_TARGET_STEPS), min=0.0, max=1.0)
+            approach_alpha = torch.clamp((approach_timer + 1.0) / float(40), min=0.0, max=1.0)
             target_pos_w[approach_target_env_ids, 0:2] = approach_start_cube_pos_w[:, 0:2] + (
                 goal_pos_w[:, 0:2] - approach_start_cube_pos_w[:, 0:2]
             ) * approach_alpha.unsqueeze(-1)
             target_pos_w[approach_target_env_ids, 2] = 0.45
-            to_descend_target_mask = self.state_timer[approach_target_env_ids] >= self.APPROACH_TARGET_STEPS
+            to_descend_target_mask = self.state_timer[approach_target_env_ids] >= 40
             if torch.any(to_descend_target_mask):
                 to_descend_target_env_ids = approach_target_env_ids[to_descend_target_mask]
                 self.state[to_descend_target_env_ids] = self.DESCEND_TARGET
@@ -295,6 +265,7 @@ class StackingStateMachine:
         descend_target_mask = self.state == self.DESCEND_TARGET
         if torch.any(descend_target_mask):
             descend_target_env_ids = torch.where(descend_target_mask)[0]
+            gripper_cmd_all[descend_target_env_ids] = -1.0
             target_slot = torch.clamp(self.task_index[descend_target_env_ids].to(torch.long), 0, self.max_tasks - 1)
             goal_pos_w = self.target_positions[descend_target_env_ids, target_slot]
             target_pos_w[descend_target_env_ids, 0:2] = goal_pos_w[:, 0:2]
@@ -372,19 +343,6 @@ class StackingStateMachine:
         target_pos_all, target_quat_all = math_utils.subtract_frame_transforms(
             root_pos_w, root_quat_w, target_pos_w, target_quat_w
         )
-        gripper_cmd_all = torch.ones((self.num_envs,), device=self.device)
-
-        # GRASP/LIFT/APPROACH_TARGET/DESCEND_TARGET state keeps gripper closed.
-        grasp_mask = self.state == self.GRASP
-        lift_mask = self.state == self.LIFT
-        approach_target_mask = self.state == self.APPROACH_TARGET
-        descend_target_mask = self.state == self.DESCEND_TARGET
-        close_mask = torch.logical_or(
-            torch.logical_or(torch.logical_or(grasp_mask, lift_mask), approach_target_mask),
-            descend_target_mask,
-        )
-        if torch.any(close_mask):
-            gripper_cmd_all[close_mask] = -1.0
 
         self.state_timer += 1
 
