@@ -48,6 +48,8 @@ class StackingStateMachine:
         self.DESCEND_FINAL_Z_OFFSET = 0.06
         self.GRASP_X_BIAS = 0.025
         self.GRASP_SETTLE_STEPS = 8
+        self.APPROACH_CUBE_STEPS = 40
+        self.DESCEND_CUBE_STEPS = 36
         self.LIFT_STEPS = 40
         self.APPROACH_TARGET_STEPS = 40
         self.state = torch.full((self.num_envs,), self.IDLE, dtype=torch.long, device=device)
@@ -117,39 +119,19 @@ class StackingStateMachine:
         self.idle_pos[new_idle_envs] = target_pos_root
         self.idle_quat[new_idle_envs] = target_quat_root
         self.idle_pos_initialized[new_idle_envs] = True
-        for env_idx in torch.where(new_idle_envs)[0]:
-            idx = int(env_idx.item())
-            print(
-                f"[INIT] env={idx} "
-                f"idle_quat={self.idle_quat[idx].tolist()} "
-                f"idle_pos={self.idle_pos[idx].tolist()}"
-            )
 
     def compute_ee_pose_targets(self, obs):
         policy_obs = self._extract_policy_obs(obs)
-        ee_pos_env = policy_obs.get("ee_pos", None)
-        ee_quat_w = policy_obs.get("ee_quat", None)
-        cube_pos_w = policy_obs.get("cube_pos", None)
-        gripper_pos_obs = policy_obs.get("gripper_pos", None)
-        gripper_closed_obs = policy_obs.get("gripper_closed", None)
-        cube_grasped_obs = policy_obs.get("cubegrasped", None)
-        if cube_grasped_obs is None:
-            cube_grasped_obs = policy_obs.get("grasped", None)
-        root_pos_w = policy_obs.get("root_pos", None)
-        root_quat_w = policy_obs.get("root_quat", None)
-        env_origin = policy_obs.get("env_origin", None)
-        if (
-            ee_pos_env is None
-            or ee_quat_w is None
-            or cube_pos_w is None
-            or root_pos_w is None
-            or root_quat_w is None
-            or env_origin is None
-        ):
-            raise KeyError(
-                "Missing required policy obs keys: "
-                "ee_pos/ee_quat/cube_pos/root_pos/root_quat/env_origin"
-            )
+        
+        ee_pos_env = policy_obs.get("ee_pos")
+        ee_quat_w = policy_obs.get("ee_quat")
+        cube_pos_w = policy_obs.get("cube_pos")
+        gripper_pos_obs = policy_obs.get("gripper_pos")
+        gripper_closed_obs = policy_obs.get("gripper_closed")
+        cube_grasped_obs = policy_obs.get("cubegrasped")
+        root_pos_w = policy_obs.get("root_pos")
+        root_quat_w = policy_obs.get("root_quat")
+        env_origin = policy_obs.get("env_origin")
 
         # abs-IK action expects pose in robot root frame. Convert observed ee pose first.
         ee_pos_w = ee_pos_env + env_origin
@@ -170,84 +152,105 @@ class StackingStateMachine:
         cube_pos_w_reshaped = cube_pos_w.view(self.num_envs, -1, 3)
         num_obs_cubes = int(cube_pos_w_reshaped.shape[1])
 
-        approach_mask = self.state == self.APPROACH_CUBE
-        descend_mask = self.state == self.DESCEND_CUBE
-        grasp_mask = self.state == self.GRASP
-        active_cube_mask = torch.logical_or(torch.logical_or(approach_mask, descend_mask), grasp_mask)
+        cube_slot_all = self.task_index.to(dtype=torch.long)
 
-        if torch.any(active_cube_mask):
-            cube_slot_all = self.task_index.to(dtype=torch.long)
-            invalid_slot_mask = torch.logical_or(cube_slot_all < 0, cube_slot_all >= num_obs_cubes)
-            bad_env_mask = torch.logical_and(active_cube_mask, invalid_slot_mask)
-            if torch.any(bad_env_mask):
-                bad_env_ids = torch.where(bad_env_mask)[0].tolist()
-                bad_slots = cube_slot_all[bad_env_mask].tolist()
+        # APPROACH_CUBE branch.
+        approach_mask = self.state == self.APPROACH_CUBE
+        approach_env_ids = torch.where(approach_mask)[0]
+        if approach_env_ids.numel() > 0:
+            approach_cube_slots = cube_slot_all[approach_env_ids]
+            invalid_approach_slots = torch.logical_or(approach_cube_slots < 0, approach_cube_slots >= num_obs_cubes)
+            if torch.any(invalid_approach_slots):
+                bad_env_ids = approach_env_ids[invalid_approach_slots].tolist()
+                bad_slots = approach_cube_slots[invalid_approach_slots].tolist()
                 raise IndexError(
-                    f"CUBE state requested invalid cube slot(s): env_ids={bad_env_ids} "
+                    f"APPROACH_CUBE invalid cube slot(s): env_ids={bad_env_ids} "
                     f"slots={bad_slots} num_obs_cubes={num_obs_cubes}"
                 )
+            approach_cube_pos_w = cube_pos_w_reshaped[approach_env_ids, approach_cube_slots]
+            approach_timer = self.state_timer[approach_env_ids].to(dtype=approach_cube_pos_w.dtype)
+            approach_alpha = torch.clamp((approach_timer + 1.0) / float(self.APPROACH_CUBE_STEPS), min=0.0, max=1.0)
+            target_pos_w[approach_env_ids, 0] = 0.5 + (approach_cube_pos_w[:, 0] - 0.5) * approach_alpha
+            target_pos_w[approach_env_ids, 1] = 0.0 + approach_cube_pos_w[:, 1] * approach_alpha
+            target_pos_w[approach_env_ids, 2] = 0.45
+            to_descend_cube_mask = self.state_timer[approach_env_ids] >= self.APPROACH_CUBE_STEPS
+            if torch.any(to_descend_cube_mask):
+                to_descend_cube_env_ids = approach_env_ids[to_descend_cube_mask]
+                self.state[to_descend_cube_env_ids] = self.DESCEND_CUBE
+                self.state_timer[to_descend_cube_env_ids] = 0
 
-            active_env_ids = torch.where(active_cube_mask)[0]
-            active_cube_slots = cube_slot_all[active_env_ids]
-            active_cube_pos_w = cube_pos_w_reshaped[active_env_ids, active_cube_slots]
-
-            # Both APPROACH and DESCEND use cube XY.
-            target_pos_w[active_env_ids, 0:2] = active_cube_pos_w[:, 0:2]
-
-            # DESCEND_CUBE: keep XY and descend near cube with safety clearance.
-            descend_env_ids = torch.where(descend_mask)[0]
-            if descend_env_ids.numel() > 0:
-                descend_cube_slots = cube_slot_all[descend_env_ids]
-                descend_cube_pos_w = cube_pos_w_reshaped[descend_env_ids, descend_cube_slots]
-                # Apply the same X bias in DESCEND as GRASP to keep trajectory consistent.
-                target_pos_w[descend_env_ids, 0] = descend_cube_pos_w[:, 0] + self.GRASP_X_BIAS
-                # Hard-coded staged descend for stability:
-                # phase-0: +0.12, phase-1: +0.09, phase-2: +0.075, phase-3: +0.06
-                # each phase holds for 12 control steps.
-                descend_timer = self.state_timer[descend_env_ids]
-                descend_offset = torch.full_like(descend_cube_pos_w[:, 2], self.DESCEND_FINAL_Z_OFFSET)
-                descend_offset = torch.where(descend_timer < 12, 0.12, descend_offset)
-                descend_offset = torch.where(
-                    torch.logical_and(descend_timer >= 12, descend_timer < 24), 0.09, descend_offset
+        # DESCEND_CUBE branch.
+        descend_mask = self.state == self.DESCEND_CUBE
+        descend_env_ids = torch.where(descend_mask)[0]
+        if descend_env_ids.numel() > 0:
+            descend_cube_slots = cube_slot_all[descend_env_ids]
+            invalid_descend_slots = torch.logical_or(descend_cube_slots < 0, descend_cube_slots >= num_obs_cubes)
+            if torch.any(invalid_descend_slots):
+                bad_env_ids = descend_env_ids[invalid_descend_slots].tolist()
+                bad_slots = descend_cube_slots[invalid_descend_slots].tolist()
+                raise IndexError(
+                    f"DESCEND_CUBE invalid cube slot(s): env_ids={bad_env_ids} "
+                    f"slots={bad_slots} num_obs_cubes={num_obs_cubes}"
                 )
-                descend_offset = torch.where(
-                    torch.logical_and(descend_timer >= 24, descend_timer < 36), 0.075, descend_offset
+            descend_cube_pos_w = cube_pos_w_reshaped[descend_env_ids, descend_cube_slots]
+            target_pos_w[descend_env_ids, 0:2] = descend_cube_pos_w[:, 0:2]
+            target_pos_w[descend_env_ids, 0] = descend_cube_pos_w[:, 0] + self.GRASP_X_BIAS
+
+            descend_timer = self.state_timer[descend_env_ids].to(dtype=descend_cube_pos_w.dtype)
+            descend_alpha = torch.clamp((descend_timer + 1.0) / float(self.DESCEND_CUBE_STEPS), min=0.0, max=1.0)
+            descend_target_z = descend_cube_pos_w[:, 2] + self.DESCEND_FINAL_Z_OFFSET
+            target_pos_w[descend_env_ids, 2] = 0.45 + (descend_target_z - 0.45) * descend_alpha
+
+            to_grasp_mask = self.state_timer[descend_env_ids] >= self.DESCEND_CUBE_STEPS
+            if torch.any(to_grasp_mask):
+                to_grasp_env_ids = descend_env_ids[to_grasp_mask]
+                to_grasp_cube_pos_w = descend_cube_pos_w[to_grasp_mask]
+                self.state[to_grasp_env_ids] = self.GRASP
+                self.state_timer[to_grasp_env_ids] = 0
+                self.grasp_hold_pos_w[to_grasp_env_ids, 0] = to_grasp_cube_pos_w[:, 0]
+                self.grasp_hold_pos_w[to_grasp_env_ids, 1] = to_grasp_cube_pos_w[:, 1]
+                self.grasp_hold_pos_w[to_grasp_env_ids, 2] = (
+                    to_grasp_cube_pos_w[:, 2] + self.DESCEND_FINAL_Z_OFFSET + 0.045
                 )
-                descend_target_z = descend_cube_pos_w[:, 2] + descend_offset
-                target_pos_w[descend_env_ids, 2] = descend_target_z
+                self.grasp_hold_valid[to_grasp_env_ids] = True
 
-                # DESCEND_CUBE -> GRASP only after final stage and Z aligned.
-                final_stage_mask = descend_timer >= 36
-                to_grasp_mask = final_stage_mask
-                if torch.any(to_grasp_mask):
-                    to_grasp_env_ids = descend_env_ids[to_grasp_mask]
-                    to_grasp_cube_pos_w = descend_cube_pos_w[to_grasp_mask]
-                    self.state[to_grasp_env_ids] = self.GRASP
-                    self.state_timer[to_grasp_env_ids] = 0
-                    # GRASP hold pose uses fixed encoded target at DESCEND terminal target.
-                    self.grasp_hold_pos_w[to_grasp_env_ids, 0] = to_grasp_cube_pos_w[:, 0]
-                    self.grasp_hold_pos_w[to_grasp_env_ids, 1] = to_grasp_cube_pos_w[:, 1]
-                    self.grasp_hold_pos_w[to_grasp_env_ids, 2] = (
-                        to_grasp_cube_pos_w[:, 2] + self.DESCEND_FINAL_Z_OFFSET + 0.045
-                    )
-                    self.grasp_hold_valid[to_grasp_env_ids] = True
+        # GRASP branch.
+        grasp_mask = self.state == self.GRASP
+        grasp_env_ids = torch.where(grasp_mask)[0]
+        if grasp_env_ids.numel() > 0:
+            target_pos_w[grasp_env_ids] = self.grasp_hold_pos_w[grasp_env_ids]
+            grasp_cube_slots = torch.clamp(self.task_index[grasp_env_ids].to(torch.long), min=0, max=max(0, num_obs_cubes - 1))
+            grasp_cube_pos_w = cube_pos_w_reshaped[grasp_env_ids, grasp_cube_slots]
+            grasp_cube_near_mask = torch.linalg.vector_norm(grasp_cube_pos_w - ee_pos_w[grasp_env_ids], dim=1) < 0.07
 
-            # GRASP: hold current world pose and only close gripper (no movement).
-            grasp_env_ids = torch.where(grasp_mask)[0]
-            if grasp_env_ids.numel() > 0:
-                target_pos_w[grasp_env_ids] = self.grasp_hold_pos_w[grasp_env_ids]
+            if gripper_pos_obs is not None:
+                grasp_gripper_pos = gripper_pos_obs
+                if grasp_gripper_pos.ndim == 1:
+                    grasp_gripper_pos = grasp_gripper_pos.unsqueeze(1)
+                grasp_gripper_engaged_mask = torch.mean(torch.abs(grasp_gripper_pos[grasp_env_ids]), dim=1) < 0.035
+            elif gripper_closed_obs is not None:
+                grasp_gripper_closed = gripper_closed_obs
+                if grasp_gripper_closed.ndim > 1:
+                    grasp_gripper_closed = grasp_gripper_closed.reshape(self.num_envs, -1)[:, 0]
+                grasp_gripper_engaged_all = (
+                    grasp_gripper_closed
+                    if grasp_gripper_closed.dtype == torch.bool
+                    else (grasp_gripper_closed > 0.5)
+                )
+                grasp_gripper_engaged_mask = grasp_gripper_engaged_all[grasp_env_ids]
+            else:
+                grasp_gripper_engaged_mask = torch.zeros((grasp_env_ids.numel(),), dtype=torch.bool, device=self.device)
 
-            # APPROACH_CUBE -> DESCEND_CUBE transition when XY is aligned.
-            approach_env_ids = torch.where(approach_mask)[0]
-            if approach_env_ids.numel() > 0:
-                approach_cube_slots = cube_slot_all[approach_env_ids]
-                approach_cube_pos_w = cube_pos_w_reshaped[approach_env_ids, approach_cube_slots]
-                dist_xy = torch.linalg.vector_norm(ee_pos_w[approach_env_ids, 0:2] - approach_cube_pos_w[:, 0:2], dim=1)
-                switch_mask = dist_xy < 0.01
-                if torch.any(switch_mask):
-                    switch_env_ids = approach_env_ids[switch_mask]
-                    self.state[switch_env_ids] = self.DESCEND_CUBE
-                    self.state_timer[switch_env_ids] = 0
+            # GRASP -> LIFT on grasp confirmation from observation.
+            grasp_wait_done_mask = self.state_timer[grasp_env_ids] >= self.GRASP_SETTLE_STEPS
+            grasp_confirmed_mask = torch.logical_and(
+                torch.logical_and(grasp_wait_done_mask, grasp_cube_near_mask), grasp_gripper_engaged_mask
+            )
+            if torch.any(grasp_confirmed_mask):
+                grasp_confirmed_env_ids = grasp_env_ids[grasp_confirmed_mask]
+                self.state[grasp_confirmed_env_ids] = self.LIFT
+                self.state_timer[grasp_confirmed_env_ids] = 0
+                self.grasp_hold_valid[grasp_confirmed_env_ids] = False
 
         # LIFT: smooth arithmetic interpolation to cube XY with carry height Z=0.35.
         lift_mask = self.state == self.LIFT
@@ -371,35 +374,6 @@ class StackingStateMachine:
         )
         gripper_cmd_all = torch.ones((self.num_envs,), device=self.device)
 
-        # Build a task-index-aware grasp signal from observations.
-        env_ids_all = torch.arange(self.num_envs, device=self.device)
-        cube_slot_safe = torch.clamp(self.task_index.to(dtype=torch.long), min=0, max=max(0, num_obs_cubes - 1))
-        selected_cube_pos_w = cube_pos_w_reshaped[env_ids_all, cube_slot_safe]
-        cube_near_mask = torch.linalg.vector_norm(selected_cube_pos_w - ee_pos_w, dim=1) < 0.07
-
-        if gripper_pos_obs is not None:
-            if gripper_pos_obs.ndim == 1:
-                gripper_pos_obs = gripper_pos_obs.unsqueeze(1)
-            mean_opening = torch.mean(torch.abs(gripper_pos_obs), dim=1)
-            gripper_engaged_mask = mean_opening < 0.035
-        elif gripper_closed_obs is not None:
-            if gripper_closed_obs.ndim > 1:
-                gripper_closed_obs = gripper_closed_obs.reshape(self.num_envs, -1)[:, 0]
-            gripper_engaged_mask = (
-                gripper_closed_obs if gripper_closed_obs.dtype == torch.bool else (gripper_closed_obs > 0.5)
-            )
-        else:
-            gripper_engaged_mask = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
-
-        cube_grasped_mask = torch.logical_and(cube_near_mask, gripper_engaged_mask)
-
-        # Optional debug view of raw task-provided signal (can be stale if fixed to cube_1).
-        raw_grasped_mask = None
-        if cube_grasped_obs is not None:
-            if cube_grasped_obs.ndim > 1:
-                cube_grasped_obs = cube_grasped_obs.reshape(self.num_envs, -1)[:, 0]
-            raw_grasped_mask = cube_grasped_obs if cube_grasped_obs.dtype == torch.bool else (cube_grasped_obs > 0.5)
-
         # GRASP/LIFT/APPROACH_TARGET/DESCEND_TARGET state keeps gripper closed.
         grasp_mask = self.state == self.GRASP
         lift_mask = self.state == self.LIFT
@@ -412,29 +386,6 @@ class StackingStateMachine:
         if torch.any(close_mask):
             gripper_cmd_all[close_mask] = -1.0
 
-        # GRASP -> LIFT on grasp confirmation from observation.
-        if torch.any(grasp_mask):
-            grasp_wait_done_mask = self.state_timer >= self.GRASP_SETTLE_STEPS
-            grasp_ready_mask = torch.logical_and(grasp_mask, grasp_wait_done_mask)
-            grasp_confirmed_mask = torch.logical_and(grasp_ready_mask, cube_grasped_mask)
-            if torch.any(grasp_confirmed_mask):
-                self.state[grasp_confirmed_mask] = self.LIFT
-                self.state_timer[grasp_confirmed_mask] = 0
-                self.grasp_hold_valid[grasp_confirmed_mask] = False
-
         self.state_timer += 1
-
-        for env_idx in range(self.num_envs):
-            print(
-                f"[DBG HOLD env={env_idx}] "
-                f"state={int(self.state[env_idx].item())} "
-                f"cube_slot={int(self.task_index[env_idx].item())} "
-                f"cube_grasped={bool(cube_grasped_mask[env_idx].item())} "
-                f"raw_grasped={(bool(raw_grasped_mask[env_idx].item()) if raw_grasped_mask is not None else None)} "
-                f"ee_pos_env={ee_pos_env[env_idx].tolist()} "
-                f"ee_pos_root={ee_pos_root[env_idx].tolist()} "
-                f"target_w={target_pos_w[env_idx].tolist()} "
-                f"target_root={target_pos_all[env_idx].tolist()}"
-            )
 
         return target_pos_all, target_quat_all, gripper_cmd_all
