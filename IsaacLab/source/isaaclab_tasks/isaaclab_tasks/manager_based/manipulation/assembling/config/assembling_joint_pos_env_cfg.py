@@ -184,7 +184,7 @@ class AssemblingCubeStackEnvCfg(AssemblingEnvCfg):
         self._configure_cubes_for_server()
 
     def _configure_cubes_for_server(self):
-        max_cubes = max(1, int(os.getenv("VAGEN_MAX_CUBES", "1")))
+        max_cubes = max(1, int(os.getenv("VAGEN_MAX_CUBES", "2")))
         grid_origin, grid_size, cell_size, _ = self.scene.get_grid_spec()
         blue_usd = self.scene.resolve_asset_path(
             local_rel="Props/Blocks/blue_block.usd",

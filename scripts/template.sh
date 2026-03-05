@@ -64,6 +64,7 @@ vagen_eval_init_defaults() {
   # ---- Isaac server argv (consumed by Python: vagen.evaluate.run_eval) ----
   vagen__export_default ISAAC_SERVER_NUM_ENVS "1"
   vagen__export_default ISAAC_SERVER_TASK "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0"
+  vagen__export_default VAGEN_MAX_CUBES "2"
   vagen__export_default ISAAC_SERVER_RECORD "0"
   vagen__export_default ISAAC_SERVER_VIDEO_LENGTH "0"
   vagen__export_default ISAAC_SERVER_VIDEO_INTERVAL "0"
@@ -170,4 +171,3 @@ vagen_eval_run() {
 
   python3 -m vagen.evaluate.run_eval --config "$cfg_path" "${final_overrides[@]}"
 }
-

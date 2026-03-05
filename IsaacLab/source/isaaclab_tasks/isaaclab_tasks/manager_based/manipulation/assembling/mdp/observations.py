@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-DEFAULT_MAX_CUBES = int(os.getenv("VAGEN_MAX_CUBES", "1"))
+DEFAULT_MAX_CUBES = int(os.getenv("VAGEN_MAX_CUBES", "2"))
 
 def _obs_device_and_dtype(env: ManagerBasedRLEnv) -> tuple[torch.device, torch.dtype]:
     env_origins = getattr(env.scene, "env_origins", None)

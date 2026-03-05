@@ -382,8 +382,7 @@ def dump_payload_images(
 
 
 def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
-    # Force single goal for cube_1 as requested
-    goals = parse_goals(args.goals)[:1]
+    goals = parse_goals(args.goals)
 
     alive = ray_get_with_timeout(
         actor.is_alive.remote(),
