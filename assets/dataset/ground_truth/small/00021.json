@@ -1,0 +1,22 @@
+{
+  "dimensions": {
+    "length": 8,
+    "width": 8,
+    "height": 8
+  },
+  "total_blocks": 2,
+  "blocks": [
+    {
+      "id": 1,
+      "x": 6,
+      "y": 5,
+      "z": 0
+    },
+    {
+      "id": 2,
+      "x": 6,
+      "y": 5,
+      "z": 1
+    }
+  ]
+}
