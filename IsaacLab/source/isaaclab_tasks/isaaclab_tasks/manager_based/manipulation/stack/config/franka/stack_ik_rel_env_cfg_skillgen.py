@@ -160,8 +160,8 @@ class FrankaCubeStackSkillgenEnvCfg(stack_joint_pos_env_cfg.FrankaCubeStackEnvCf
             "yaw": (-1.0, 1, 0),
         }
 
-        # Set the offset for the end effector to be 0.0
+        # Keep end-effector frame aligned with the shared stack frame definition.
         for f in self.scene.ee_frame.target_frames:
             if f.name == "end_effector":
-                f.offset.pos = [0.0, 0.0, 0.0]
+                f.offset.pos = [0.0, 0.0, 0.1034]
                 break

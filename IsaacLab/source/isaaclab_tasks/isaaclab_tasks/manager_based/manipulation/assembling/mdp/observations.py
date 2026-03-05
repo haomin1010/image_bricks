@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import os
-import re
 from typing import TYPE_CHECKING
 
 import torch
@@ -19,10 +18,7 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-DEFAULT_MAX_CUBES = int(os.getenv("VAGEN_MAX_CUBES", "8"))
-DEFAULT_EE_BODY_NAME = os.getenv("VAGEN_IK_EE_BODY_NAME", "panda_link7") or "panda_link7"
-USE_EE_FRAME_TCP = os.getenv("VAGEN_USE_EE_FRAME_TCP", "1").strip().lower() not in {"0", "false", "off", "no"}
-
+DEFAULT_MAX_CUBES = int(os.getenv("VAGEN_MAX_CUBES", "1"))
 
 def _obs_device_and_dtype(env: ManagerBasedRLEnv) -> tuple[torch.device, torch.dtype]:
     env_origins = getattr(env.scene, "env_origins", None)
@@ -40,19 +36,22 @@ def _obs_static_cache(env: ManagerBasedRLEnv) -> dict:
     return cache
 
 
-def _try_ee_frame_pose(env: ManagerBasedRLEnv) -> tuple[torch.Tensor, torch.Tensor] | None:
-    if not USE_EE_FRAME_TCP:
-        return None
-    try:
-        ee_frame: FrameTransformer = env.scene["ee_frame"]
-    except Exception:
-        return None
-    try:
-        ee_pos_w = ee_frame.data.target_pos_w[:, 0, :]
-        ee_quat_w = ee_frame.data.target_quat_w[:, 0, :]
-    except Exception:
-        return None
-    return ee_pos_w, ee_quat_w
+def _discover_cube_names(scene, cube_name_prefix: str, max_cubes: int) -> list[str]:
+    """Resolve cube entity names strictly as {prefix}1..{prefix}N."""
+    if max_cubes <= 0:
+        return []
+
+    expected_names = [f"{cube_name_prefix}{cube_idx}" for cube_idx in range(1, max_cubes + 1)]
+    keys_fn = getattr(scene, "keys", None)
+    available_names = set(keys_fn()) if callable(keys_fn) else set()
+    missing_names = [name for name in expected_names if name not in available_names and not hasattr(scene, name)]
+    if missing_names:
+        keys_sample = [str(k) for k in list(available_names)[:16]]
+        raise RuntimeError(
+            "Strict cube discovery failed: missing cube entities. "
+            f"expected={expected_names} missing={missing_names} scene_keys_sample={keys_sample}"
+        )
+    return expected_names
 
 
 def _iter_cube_names(
@@ -66,28 +65,7 @@ def _iter_cube_names(
     cache_key = ("cube_names", cube_name_prefix, int(max_cubes))
     cache = _obs_static_cache(env)
     cached_names = cache.get(cache_key, None)
-    if isinstance(cached_names, tuple):
-        return list(cached_names)
-
-    pattern = re.compile(rf"^{re.escape(cube_name_prefix)}(\d+)$")
-    indexed_names: list[tuple[int, str]] = []
-    for attr_name in dir(env.scene):
-        match = pattern.match(attr_name)
-        if match is None:
-            continue
-        cube_idx = int(match.group(1))
-        if 1 <= cube_idx <= max_cubes and hasattr(env.scene, attr_name):
-            indexed_names.append((cube_idx, attr_name))
-
-    indexed_names.sort(key=lambda item: item[0])
-    cube_names = [name for _, name in indexed_names]
-    if not cube_names:
-        # Fallback for scenes that expose cubes only through dynamic attributes.
-        for cube_idx in range(1, max_cubes + 1):
-            cube_name = f"{cube_name_prefix}{cube_idx}"
-            if hasattr(env.scene, cube_name):
-                cube_names.append(cube_name)
-
+    cube_names = _discover_cube_names(env.scene, cube_name_prefix=cube_name_prefix, max_cubes=max_cubes)
     cache[cache_key] = tuple(cube_names)
     return cube_names
 
@@ -196,108 +174,90 @@ def all_cube_orientations_in_world_frame(
     return cube_quat_w.reshape(env.num_envs, max_cubes * 4)
 
 
-def magic_suction_command(env: ManagerBasedRLEnv, default_open_cmd: float = 1.0) -> torch.Tensor:
-    """Latest per-env magic suction command written by action terms."""
-    device, dtype = _obs_device_and_dtype(env)
-    cmd = getattr(env.unwrapped, "_vagen_magic_suction_cmd", None)
-    if isinstance(cmd, torch.Tensor) and cmd.numel() >= env.num_envs:
-        return cmd[: env.num_envs].to(device=device, dtype=dtype).reshape(env.num_envs, 1)
-    return torch.full((env.num_envs, 1), float(default_open_cmd), device=device, dtype=dtype)
-
-
-def magic_suction_closed_flag(env: ManagerBasedRLEnv, close_command_threshold: float = 0.0) -> torch.Tensor:
-    """Binary flag (1=close command active) derived from magic suction command."""
-    cmd = magic_suction_command(env)
-    return (cmd < float(close_command_threshold)).to(dtype=cmd.dtype)
-
-
-def privileged_state(
+def gripper_pos(
     env: ManagerBasedRLEnv,
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    ee_body_name: str = DEFAULT_EE_BODY_NAME,
-    max_cubes: int = DEFAULT_MAX_CUBES,
-    cube_name_prefix: str = "cube_",
-    close_command_threshold: float = 0.0,
 ) -> torch.Tensor:
-    """Privileged state vector with robot, object, and suction state."""
+    """Obtain gripper position for both suction and parallel gripper setups."""
     robot: Articulation = env.scene[robot_cfg.name]
 
-    root_pos = robot.data.root_pos_w
-    root_quat = robot.data.root_quat_w
-    joint_pos = robot.data.joint_pos
-    joint_vel = robot.data.joint_vel
-    env_origin_obs = env_origin(env=env).to(dtype=joint_pos.dtype)
-    ee_pos_obs = ee_pos(env=env, robot_cfg=robot_cfg, ee_body_name=ee_body_name)
-    ee_quat_obs = ee_quat(env=env, robot_cfg=robot_cfg, ee_body_name=ee_body_name)
+    surface_grippers = getattr(env.scene, "surface_grippers", None)
+    if surface_grippers is not None and len(surface_grippers) > 0:
+        gripper_states: list[torch.Tensor] = []
+        for _, surface_gripper in surface_grippers.items():
+            gripper_states.append(surface_gripper.state.view(-1, 1))
+        if len(gripper_states) == 1:
+            return gripper_states[0]
+        return torch.cat(gripper_states, dim=1)
 
-    cube_pos = all_cube_positions_in_world_frame(
-        env=env,
-        max_cubes=max_cubes,
-        cube_name_prefix=cube_name_prefix,
-    ).to(dtype=joint_pos.dtype)
-    cube_quat = all_cube_orientations_in_world_frame(
-        env=env,
-        max_cubes=max_cubes,
-        cube_name_prefix=cube_name_prefix,
-    ).to(dtype=joint_pos.dtype)
-    suction_cmd = magic_suction_command(env).to(dtype=joint_pos.dtype)
-    suction_closed = magic_suction_closed_flag(
-        env=env, close_command_threshold=close_command_threshold
-    ).to(dtype=joint_pos.dtype)
+    if hasattr(env.cfg, "gripper_joint_names"):
+        gripper_joint_ids, _ = robot.find_joints(env.cfg.gripper_joint_names)
+        assert len(gripper_joint_ids) == 2, "Observation gripper_pos only supports parallel gripper for now."
+        finger_joint_1 = robot.data.joint_pos[:, gripper_joint_ids[0]].clone().unsqueeze(1)
+        finger_joint_2 = -1.0 * robot.data.joint_pos[:, gripper_joint_ids[1]].clone().unsqueeze(1)
+        return torch.cat((finger_joint_1, finger_joint_2), dim=1)
 
-    return torch.cat(
-        (
-            env_origin_obs,
-            root_pos,
-            root_quat,
-            joint_pos,
-            joint_vel,
-            ee_pos_obs,
-            ee_quat_obs,
-            cube_pos,
-            cube_quat,
-            suction_cmd,
-            suction_closed,
-        ),
-        dim=1,
-    )
+    raise NotImplementedError("[Error] Cannot find gripper_joint_names in the environment config")
+
+
+def gripper_closed_flag(
+    env: ManagerBasedRLEnv,
+    close_pos_threshold: float = 0.005,
+) -> torch.Tensor:
+    """Binary flag (1=closed) from mean finger opening."""
+    finger_pos = torch.abs(gripper_pos(env))
+    mean_opening = torch.mean(finger_pos, dim=1, keepdim=True)
+    return (mean_opening <= float(close_pos_threshold)).to(dtype=finger_pos.dtype)
 
 
 def ee_pos(
     env: ManagerBasedRLEnv,
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    ee_body_name: str = DEFAULT_EE_BODY_NAME,
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
 ) -> torch.Tensor:
-    """End-effector position in world frame from ee_frame target pose or articulation body state."""
-    ee_frame_pose = _try_ee_frame_pose(env)
-    if ee_frame_pose is not None:
-        ee_pos_w, _ = ee_frame_pose
-        return ee_pos_w
-
-    robot: Articulation = env.scene[robot_cfg.name]
-    body_ids, body_names = robot.find_bodies(ee_body_name, preserve_order=True)
-    if len(body_ids) != 1:
-        raise ValueError(f"Expected one body for '{ee_body_name}', got {len(body_ids)}: {body_names}.")
-    body_idx = int(body_ids[0])
-    ee_pos_w = robot.data.body_pos_w[:, body_idx]
-    return ee_pos_w
+    """End-effector position in env frame from ee_frame target pose."""
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    return ee_frame.data.target_pos_w[:, 0, :] - env.scene.env_origins[:, 0:3]
 
 
 def ee_quat(
     env: ManagerBasedRLEnv,
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    ee_body_name: str = DEFAULT_EE_BODY_NAME,
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
 ) -> torch.Tensor:
-    """End-effector quaternion (wxyz) in world frame from ee_frame target pose or articulation body state."""
-    ee_frame_pose = _try_ee_frame_pose(env)
-    if ee_frame_pose is not None:
-        _, ee_quat_w = ee_frame_pose
-        return ee_quat_w
+    """End-effector quaternion (wxyz) from ee_frame target pose."""
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    return ee_frame.data.target_quat_w[:, 0, :]
+
+
+def object_grasped(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg,
+    ee_frame_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    diff_threshold: float = 0.06,
+) -> torch.Tensor:
+    """Check if an object is grasped by the specified robot."""
 
     robot: Articulation = env.scene[robot_cfg.name]
-    body_ids, body_names = robot.find_bodies(ee_body_name, preserve_order=True)
-    if len(body_ids) != 1:
-        raise ValueError(f"Expected one body for '{ee_body_name}', got {len(body_ids)}: {body_names}.")
-    body_idx = int(body_ids[0])
-    ee_quat_w = robot.data.body_quat_w[:, body_idx]
-    return ee_quat_w
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+
+    object_pos = obj.data.root_pos_w[:, :3]
+    end_effector_pos = ee_frame.data.target_pos_w[:, 0, :]
+    pose_diff = torch.linalg.vector_norm(object_pos - end_effector_pos, dim=1)
+
+    surface_grippers = getattr(env.scene, "surface_grippers", None)
+    if surface_grippers is not None and len(surface_grippers) > 0:
+        surface_gripper = surface_grippers["surface_gripper"]
+        suction_cup_status = surface_gripper.state.view(-1)  # 1: closed, 0: closing, -1: open
+        suction_cup_is_closed = suction_cup_status == 1
+        return torch.logical_and(suction_cup_is_closed, pose_diff < float(diff_threshold))
+
+    if hasattr(env.cfg, "gripper_joint_names"):
+        gripper_joint_ids, _ = robot.find_joints(env.cfg.gripper_joint_names)
+        assert len(gripper_joint_ids) == 2, "Observations only support parallel gripper for now."
+        open_val = torch.tensor(env.cfg.gripper_open_val, dtype=torch.float32, device=env.device)
+        joint_1_closed = torch.abs(robot.data.joint_pos[:, gripper_joint_ids[0]] - open_val) > env.cfg.gripper_threshold
+        joint_2_closed = torch.abs(robot.data.joint_pos[:, gripper_joint_ids[1]] - open_val) > env.cfg.gripper_threshold
+        return torch.logical_and(torch.logical_and(pose_diff < float(diff_threshold), joint_1_closed), joint_2_closed)
+
+    raise NotImplementedError("[Error] Cannot find gripper_joint_names in the environment config")

@@ -47,29 +47,21 @@ class VagenStackExecutionManager:
             cube_z_size=self.cube_size,
             grid_origin=list(grid_origin),
             cell_size=float(cell_size),
+            grid_size=max(1, len(self.cube_names)),
         )
-        # Provide a direct env reference so the state machine can sync the
-        # suction controller's attached_cube_idx on every step.
-        self.sm._env_unwrapped = self.env.unwrapped
-
         # Lazy import to avoid importing task modules before Isaac app startup.
         from isaaclab_tasks.manager_based.manipulation.assembling import mdp
 
         default_cam_names = ("camera", "camera_front", "camera_side", "camera_iso", "camera_iso2")
         self.cam_names = list(getattr(mdp, "STACK_CAMERA_NAMES", getattr(mdp, "DEFAULT_CAMERA_NAMES", default_cam_names)))
 
-        # Shared state consumed by event-owned runtime controllers.
-        self.env.unwrapped._vagen_magic_suction_active_cube_idx = self.sm.task_index
-        self.env.unwrapped._vagen_magic_suction_cube_names = tuple(self.cube_names)
-        self.env.unwrapped._vagen_magic_suction_cube_size = float(self.cube_size)
-        if getattr(self.env.unwrapped, "_vagen_magic_suction_controller", None) is None:
-            print(
-                "[WARN]: Magic suction event controller was not initialized on startup. "
-                "Check `events.magic_suction_controller` in AssemblingEnvCfg."
-            )
+        # Shared state consumed by runtime terms.
+        self.env.unwrapped._vagen_new_task_available = self.sm.new_task_available
+        self.env.unwrapped._vagen_new_task_index = self.sm.new_task_index
         print(
-            "[INFO]: Pinocchio IK enabled via action term "
-            "(input action=[ee_pos(3), ee_quat_wxyz(4), gripper(1)], output=UR10 joint targets + magic suction cmd). "
+            "[INFO]: Differential IK enabled via action term "
+            "(input action=[ee_pos(3), ee_quat_wxyz(4), gripper(1)], "
+            "output=Franka joint targets + parallel-gripper cmd). "
             f"ik_lambda_override={self.ik_lambda_val}"
         )
         print(
@@ -100,8 +92,8 @@ class VagenStackExecutionManager:
         grid_origin = self.sm.grid_origin
         cell_size = self.sm.cell_size
         env_origin = self.env.unwrapped.scene.env_origins[env_id]
-        target_x = grid_origin[0].item() + (g_x - 2.5) * cell_size
-        target_y = grid_origin[1].item() + (g_y - 2.5) * cell_size
+        target_x = grid_origin[0].item() + (g_x - 4) * cell_size
+        target_y = grid_origin[1].item() + (g_y - 4.5) * cell_size
         target_z = (g_z + 0.5) * self.cube_size + 0.002
         return env_origin + torch.tensor([target_x, target_y, target_z], device=env_origin.device)
 
@@ -206,6 +198,9 @@ class VagenStackExecutionManager:
             proxy_actor.update_state.remote(env_id, img_list)
 
     def compute_joint_actions(self, obs: dict) -> torch.Tensor:
+        policy_obs = obs.get("policy", obs) if isinstance(obs, dict) else None
+        if isinstance(policy_obs, dict):
+            self.env.unwrapped._vagen_policy_obs = policy_obs
         ee_pos_des, ee_quat_des, gripper_cmd = self.sm.compute_ee_pose_targets(obs)
         quat_norm = torch.linalg.vector_norm(ee_quat_des, dim=-1, keepdim=True).clamp_min(1e-8)
         ee_quat_des = ee_quat_des / quat_norm
@@ -215,22 +210,7 @@ class VagenStackExecutionManager:
         actions = self.compute_joint_actions(obs)
         obs, _, _, _, _ = self.env.step(actions)
         self._step_count += 1
-        # Print joint torques every 50 sim steps to avoid log spam.
-        if self._step_count % 50 == 0:
-            try:
-                robot = self.env.unwrapped.scene["robot"]
-                torques = robot.data.applied_torque  # shape: (num_envs, num_joints)
-                torque_str = ", ".join(
-                    f"[env{i}]" + str([round(v, 4) for v in torques[i].tolist()])
-                    for i in range(torques.shape[0])
-                )
-                print(f"[TORQUE step={self._step_count}] applied_torque (Nm): {torque_str}")
-                print(f"Torque: {robot.data.applied_torque.cpu().numpy()}")
-            except Exception as e:
-                print(f"[TORQUE] Failed to read applied_torque: {e}")
         return obs
 
     def close(self):
-        controller = getattr(self.env.unwrapped, "_vagen_magic_suction_controller", None)
-        if controller is not None and hasattr(controller, "close"):
-            controller.close()
+        pass
