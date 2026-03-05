@@ -132,12 +132,7 @@ class VagenStackExecutionManager:
             "submit_success": None,
         }
         target_pos_w = self._parse_goal_to_world(env_id, goal)
-        self.sm.num_tasks_per_env[env_id] = current_task_idx + 1
-        self.sm.target_positions[env_id, current_task_idx] = target_pos_w
-        self.sm.state[env_id] = self.sm.APPROACH_CUBE
-        self.sm.state_timer[env_id] = 0
-        self.sm.new_task_available[env_id] = True
-        self.sm.new_task_index[env_id] = current_task_idx
+        self.sm.set_env_targets([env_id], target_pos_w)
         return {"immediate_done": False, "done_payload": None}
 
     def collect_completed_step_events(self) -> list[dict[str, int | bool]]:
