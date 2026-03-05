@@ -25,6 +25,7 @@ cd Isaaclab
 ```bash
 cd VAGEN
 pip install -e .
+git submodule update --init --recursive
 cd verl
 USE_MEGATRON=0 bash scripts/install_vllm_sglang_mcore.sh
 pip install --no-deps -e .

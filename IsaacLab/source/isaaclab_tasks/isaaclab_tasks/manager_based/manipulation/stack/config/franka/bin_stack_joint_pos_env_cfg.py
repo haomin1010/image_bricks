@@ -186,7 +186,7 @@ class FrankaBinStackEnvCfg(StackEnvCfg):
                     prim_path="{ENV_REGEX_NS}/Robot/panda_hand",
                     name="end_effector",
                     offset=OffsetCfg(
-                        pos=(0.0, 0.0, 0.0),
+                        pos=[0.0, 0.0, 0.1034],
                     ),
                 ),
                 FrameTransformerCfg.FrameCfg(

@@ -40,7 +40,9 @@ class FinalViewBuilder:
         """保存坐标到CSV文件"""
         if not np.any(self.grid):
             return
-        coords = np.argwhere(self.grid)
+        coords = np.argwhere(self.grid).tolist()
+        # 按 Z X Y 升序排序
+        coords.sort(key=lambda c: (c[2], c[0], c[1]))
         with open(filename, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(["x", "y", "z"])
@@ -51,6 +53,8 @@ class FinalViewBuilder:
         if not np.any(self.grid):
             return
         coords = np.argwhere(self.grid).tolist()
+        # 按 Z X Y 升序排序
+        coords.sort(key=lambda c: (c[2], c[0], c[1]))
         
         data = {
             "dimensions": {

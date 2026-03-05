@@ -7,34 +7,33 @@ import os
 from pathlib import Path
 
 import isaaclab.sim as sim_utils
-import torch
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
 from isaaclab.devices.openxr import XrCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import FrameTransformerCfg
+from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg, OffsetCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab_tasks.manager_based.manipulation.stack.mdp import franka_stack_events
+from isaaclab.markers.config import FRAME_MARKER_CFG
 
 from .cfg_override import (
-    ASSEMBLING_EE_BODY_NAME,
-    ASSEMBLING_EE_TARGET_PRIM_PATH,
     ASSEMBLING_MAX_CUBES,
-    DEFAULT_ARM_RESET_POSE,
     DEFAULT_GRID_CELL_SIZE,
     DEFAULT_GRID_LINE_THICKNESS,
     DEFAULT_GRID_ORIGIN,
     DEFAULT_GRID_SIZE,
     FRANKA_ARM_JOINT_NAMES,
     FRANKA_ARM_ONLY_CFG,
-    FRANKA_UR10_TCP_OFFSET_POS_DEFAULT,
-    FRANKA_UR10_TCP_OFFSET_ROT_DEFAULT,
     AssemblingCfgOverride,
 )
 from . import mdp
@@ -46,54 +45,39 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "off", "no"}
 
 
-def _set_default_joint_pose(
-    env,
-    env_ids: torch.Tensor | None,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-):
-    """Directly hardcode robot joint positions on reset."""
-    robot = env.scene[asset_cfg.name]
-    device = robot.data.joint_pos.device
-    dtype = robot.data.joint_pos.dtype
-
-    if env_ids is None:
-        env_ids_t = torch.arange(env.num_envs, device=device, dtype=torch.long)
-    else:
-        env_ids_t = torch.as_tensor(env_ids, device=device, dtype=torch.long)
-        if env_ids_t.numel() == 0:
-            return
-
-    default_pose_t = torch.as_tensor(DEFAULT_ARM_RESET_POSE, device=device, dtype=dtype).reshape(1, -1)
-    dof = min(int(default_pose_t.shape[-1]), int(robot.data.joint_pos.shape[-1]))
-
-    robot.data.joint_pos[env_ids_t, :dof] = default_pose_t[:, :dof]
-    robot.data.joint_vel[env_ids_t] = 0.0
-
-    env_ids_i32 = env_ids_t.to(dtype=torch.int32)
-    robot.write_joint_state_to_sim(
-        robot.data.joint_pos[env_ids_t],
-        robot.data.joint_vel[env_ids_t],
-        env_ids=env_ids_i32,
+def _build_default_ee_frame_cfg() -> FrameTransformerCfg:
+    marker_cfg = FRAME_MARKER_CFG.copy()
+    marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+    marker_cfg.prim_path = "/Visuals/FrameTransformer"
+    return FrameTransformerCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/panda_link0",
+        debug_vis=False,
+        visualizer_cfg=marker_cfg,
+        target_frames=[
+            FrameTransformerCfg.FrameCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/panda_hand",
+                name="end_effector",
+                offset=OffsetCfg(pos=[0.0, 0.0, 0.1034]),
+            ),
+            FrameTransformerCfg.FrameCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/panda_rightfinger",
+                name="tool_rightfinger",
+                offset=OffsetCfg(pos=(0.0, 0.0, 0.046)),
+            ),
+            FrameTransformerCfg.FrameCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/panda_leftfinger",
+                name="tool_leftfinger",
+                offset=OffsetCfg(pos=(0.0, 0.0, 0.046)),
+            ),
+        ],
     )
 
 
 @configclass
 class ObjectTableSceneCfg(InteractiveSceneCfg):
-    """Base scene: robot + ee frame + table + ground + light."""
+    """Base scene: robot + table + ground + light."""
 
     robot: ArticulationCfg = FRANKA_ARM_ONLY_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-    ee_frame: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/panda_link0",
-        debug_vis=False,
-        visualizer_cfg=None,
-        target_frames=[
-            FrameTransformerCfg.FrameCfg(
-                prim_path=ASSEMBLING_EE_TARGET_PRIM_PATH,
-                name="end_effector",
-                offset=OffsetCfg(pos=FRANKA_UR10_TCP_OFFSET_POS_DEFAULT, rot=FRANKA_UR10_TCP_OFFSET_ROT_DEFAULT),
-            ),
-        ],
-    )
     table = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Table",
         init_state=AssetBaseCfg.InitialStateCfg(pos=[0.5, 0, 0], rot=[0.707, 0, 0, 0.707]),
@@ -110,6 +94,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
         prim_path="/World/light",
         spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
     )
+    ee_frame: FrameTransformerCfg = _build_default_ee_frame_cfg()
 
     def __post_init__(self):
         super().__post_init__()
@@ -252,13 +237,22 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
 @configclass
 class ActionsCfg:
     """Action specifications for the environment."""
-
-    arm_action: mdp.PinocchioPoseActionCfg = mdp.PinocchioPoseActionCfg(
+    arm_action: DifferentialInverseKinematicsActionCfg = DifferentialInverseKinematicsActionCfg(
         asset_name="robot",
-        joint_names=FRANKA_ARM_JOINT_NAMES,
-        ee_body_name=ASSEMBLING_EE_BODY_NAME,
+        joint_names=["panda_joint.*"],
+        body_name="panda_hand",
+        controller=DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls"),
+        body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(
+            pos=[0.0, 0.0, 0.1034],
+        ),
     )
-    gripper_action: mdp.MagicSuctionBinaryActionCfg = mdp.MagicSuctionBinaryActionCfg(asset_name="robot")
+
+    gripper_action: mdp.BinaryJointPositionActionCfg = mdp.BinaryJointPositionActionCfg(
+        asset_name="robot",
+        joint_names=["panda_finger.*"],
+        open_command_expr={"panda_finger_.*": 0.04},
+        close_command_expr={"panda_finger_.*": 0.0},
+    )
 
 
 @configclass
@@ -268,33 +262,30 @@ class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         actions = ObsTerm(func=mdp.last_action)
+        root_pos = ObsTerm(func=mdp.root_pos_w)
+        root_quat = ObsTerm(func=mdp.root_quat_w)
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
-        cube_positions = ObsTerm(
+        cube_pos = ObsTerm(
             func=mdp.all_cube_positions_in_world_frame,
             params={"max_cubes": ASSEMBLING_MAX_CUBES},
         )
         env_origin = ObsTerm(func=mdp.env_origin)
-        cube_orientations = ObsTerm(
+        cube_quat = ObsTerm(
             func=mdp.all_cube_orientations_in_world_frame,
             params={"max_cubes": ASSEMBLING_MAX_CUBES},
         )
-        ee_pos = ObsTerm(func=mdp.ee_pos, params={"ee_body_name": ASSEMBLING_EE_BODY_NAME})
-        ee_quat = ObsTerm(func=mdp.ee_quat, params={"ee_body_name": ASSEMBLING_EE_BODY_NAME})
-        gripper_cmd = ObsTerm(func=mdp.magic_suction_command)
-
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = False
-
-    @configclass
-    class PrivilegedCfg(ObsGroup):
-        state = ObsTerm(
-            func=mdp.privileged_state,
+        ee_pos = ObsTerm(func=mdp.ee_pos, params={"ee_frame_cfg": SceneEntityCfg("ee_frame")})
+        ee_quat = ObsTerm(func=mdp.ee_quat, params={"ee_frame_cfg": SceneEntityCfg("ee_frame")})
+        gripper_pos = ObsTerm(func=mdp.gripper_pos)
+        gripper_closed = ObsTerm(func=mdp.gripper_closed_flag)
+        grasped = ObsTerm(
+            func=mdp.object_grasped,
             params={
                 "robot_cfg": SceneEntityCfg("robot"),
-                "ee_body_name": ASSEMBLING_EE_BODY_NAME,
-                "max_cubes": ASSEMBLING_MAX_CUBES,
+                "ee_frame_cfg": SceneEntityCfg("ee_frame"),
+                "object_cfg": SceneEntityCfg("cube_1"),
+                "diff_threshold": 0.06,
             },
         )
 
@@ -330,7 +321,6 @@ class ObservationsCfg:
             self.concatenate_terms = False
 
     policy: PolicyCfg = PolicyCfg()
-    privileged: PrivilegedCfg = PrivilegedCfg()
     rgb_camera: RGBCameraPolicyCfg = RGBCameraPolicyCfg()
     # Will be populated by downstream task configs when needed.
     subtask_terms = None
@@ -353,33 +343,15 @@ class RewardsCfg:
 class EventsCfg:
     """Event terms shared by assembling tasks."""
 
-    init_arm_pose = EventTerm(
-        func=_set_default_joint_pose,
+    init_franka_arm_pose = EventTerm(
+        func=franka_stack_events.set_default_joint_pose,
         mode="reset",
-        params={},
+        params={
+            "default_pose": [0.0444, -0.1894, -0.1107, -2.5148, 0.0044, 2.3775, 0.6952, 0.0400, 0.0400],
+        },
     )
 
-    magic_suction_controller = EventTerm(
-        func=mdp.MagicSuctionControllerEvent,
-        mode="startup",
-        params={
-            "cube_name_prefix": "cube_",
-            "max_cubes": ASSEMBLING_MAX_CUBES,
-            "cube_size": float(os.getenv("VAGEN_CUBE_SIZE", "0.045")),
-            "attach_distance": float(os.getenv("VAGEN_MAGIC_SUCTION_ATTACH_DISTANCE", "0.05")),
-            "close_command_threshold": float(os.getenv("VAGEN_MAGIC_SUCTION_CLOSE_CMD_THRESHOLD", "0.0")),
-            "ee_body_name": ASSEMBLING_EE_BODY_NAME,
-        },
-    )
-    teleport_pending_cubes = EventTerm(
-        func=mdp.TeleportPendingCubesEvent,
-        mode="startup",
-        params={
-            "cube_name_prefix": "cube_",
-            "max_cubes": ASSEMBLING_MAX_CUBES,
-            "cube_size": float(os.getenv("VAGEN_CUBE_SIZE", "0.045")),
-        },
-    )
+    # No suction event: grasping is done by the native Franka parallel gripper.
 
 
 @configclass
@@ -395,6 +367,9 @@ class AssemblingEnvCfg(ManagerBasedRLEnvCfg):
 
     commands = None
     curriculum = None
+    gripper_joint_names = ["panda_finger_.*"]
+    gripper_open_val = 0.04
+    gripper_threshold = 0.005
 
     xr: XrCfg = XrCfg(
         anchor_pos=(-0.1, -0.5, -1.05),

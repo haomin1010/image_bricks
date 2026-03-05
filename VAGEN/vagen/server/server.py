@@ -7,7 +7,7 @@ import torch
 from .state_machine import StackingStateMachine
 
 # Isaac Lab and Gym imports will be deferred inside the Actor to ensure
-# they are only loaded in the process that has the simulation_app.
+# they are only loaded in the process that has the simulation_app. 
 
 class VagenStackExecutionManager:
     """Server-side execution manager for stack task control."""
@@ -30,6 +30,7 @@ class VagenStackExecutionManager:
         self.device = env.unwrapped.device
         self.ik_lambda_val = ik_lambda_val
         self._step_initial_task_idx: dict[int, dict[str, Any]] = {}
+        self._step_count: int = 0  # global sim-step counter for torque logging
 
         default_max_tasks = len(self.cube_names) if len(self.cube_names) > 0 else 8
         resolved_max_tasks = (
@@ -46,29 +47,21 @@ class VagenStackExecutionManager:
             cube_z_size=self.cube_size,
             grid_origin=list(grid_origin),
             cell_size=float(cell_size),
+            grid_size=max(1, len(self.cube_names)),
         )
-
         # Lazy import to avoid importing task modules before Isaac app startup.
         from isaaclab_tasks.manager_based.manipulation.assembling import mdp
 
         default_cam_names = ("camera", "camera_front", "camera_side", "camera_iso", "camera_iso2")
         self.cam_names = list(getattr(mdp, "STACK_CAMERA_NAMES", getattr(mdp, "DEFAULT_CAMERA_NAMES", default_cam_names)))
 
-        # Shared state consumed by event-owned runtime controllers.
-        self.env.unwrapped._vagen_magic_suction_active_cube_idx = self.sm.task_index
-        self.env.unwrapped._vagen_magic_suction_cube_names = tuple(self.cube_names)
-        self.env.unwrapped._vagen_magic_suction_cube_size = float(self.cube_size)
+        # Shared state consumed by runtime terms.
         self.env.unwrapped._vagen_new_task_available = self.sm.new_task_available
         self.env.unwrapped._vagen_new_task_index = self.sm.new_task_index
-        self.env.unwrapped._vagen_source_pick_pos_xy = self.sm.source_pick_pos
-        if getattr(self.env.unwrapped, "_vagen_magic_suction_controller", None) is None:
-            print(
-                "[WARN]: Magic suction event controller was not initialized on startup. "
-                "Check `events.magic_suction_controller` in AssemblingEnvCfg."
-            )
         print(
-            "[INFO]: Pinocchio IK enabled via action term "
-            "(input action=[ee_pos(3), ee_quat_wxyz(4), gripper(1)], output=UR10 joint targets + magic suction cmd). "
+            "[INFO]: Differential IK enabled via action term "
+            "(input action=[ee_pos(3), ee_quat_wxyz(4), gripper(1)], "
+            "output=Franka joint targets + parallel-gripper cmd). "
             f"ik_lambda_override={self.ik_lambda_val}"
         )
         print(
@@ -99,8 +92,8 @@ class VagenStackExecutionManager:
         grid_origin = self.sm.grid_origin
         cell_size = self.sm.cell_size
         env_origin = self.env.unwrapped.scene.env_origins[env_id]
-        target_x = grid_origin[0].item() + (g_x - 2.5) * cell_size
-        target_y = grid_origin[1].item() + (g_y - 2.5) * cell_size
+        target_x = grid_origin[0].item() + (g_x - 4) * cell_size
+        target_y = grid_origin[1].item() + (g_y - 4.5) * cell_size
         target_z = (g_z + 0.5) * self.cube_size + 0.002
         return env_origin + torch.tensor([target_x, target_y, target_z], device=env_origin.device)
 
@@ -205,6 +198,9 @@ class VagenStackExecutionManager:
             proxy_actor.update_state.remote(env_id, img_list)
 
     def compute_joint_actions(self, obs: dict) -> torch.Tensor:
+        policy_obs = obs.get("policy", obs) if isinstance(obs, dict) else None
+        if isinstance(policy_obs, dict):
+            self.env.unwrapped._vagen_policy_obs = policy_obs
         ee_pos_des, ee_quat_des, gripper_cmd = self.sm.compute_ee_pose_targets(obs)
         quat_norm = torch.linalg.vector_norm(ee_quat_des, dim=-1, keepdim=True).clamp_min(1e-8)
         ee_quat_des = ee_quat_des / quat_norm
@@ -213,9 +209,8 @@ class VagenStackExecutionManager:
     def step(self, obs: dict):
         actions = self.compute_joint_actions(obs)
         obs, _, _, _, _ = self.env.step(actions)
+        self._step_count += 1
         return obs
 
     def close(self):
-        controller = getattr(self.env.unwrapped, "_vagen_magic_suction_controller", None)
-        if controller is not None and hasattr(controller, "close"):
-            controller.close()
+        pass
