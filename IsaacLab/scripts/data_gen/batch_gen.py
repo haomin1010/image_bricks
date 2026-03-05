@@ -15,7 +15,7 @@ from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Snapshot a table with grid.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments.")
-parser.add_argument("--type", type=str, choices=["small", "large"], default="small", help="Category: small or large")
+parser.add_argument("--type", type=str, choices=["small", "small_size4", "large"], default="small", help="Category: small, small_size4 or large")
 parser.add_argument("--json_file", type=str, default="00001.json", help="Name of the JSON file to process")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -47,7 +47,8 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 # =============================================================================
 
 # 指定 JSON 文件的路径
-JSON_FOLDER = os.path.join("ground_truth", args_cli.type)
+DATASET_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../assets/dataset"))
+JSON_FOLDER = os.path.join(DATASET_DIR, "ground_truth", args_cli.type)
 JSON_FILENAME = args_cli.json_file
 JSON_PATH = os.path.join(JSON_FOLDER, JSON_FILENAME)
 
@@ -416,7 +417,7 @@ def main():
     }
 
     # 设置输出目录
-    base_output_dir = os.path.join("output_snapshots", args_cli.type)
+    base_output_dir = os.path.join(DATASET_DIR, "output_snapshots", args_cli.type)
     # 使用 JSON 文件名作为子目录名 (e.g. "output_snapshots/small/00001")
     shape_output_dir = os.path.join(base_output_dir, FILE_ID)
     os.makedirs(shape_output_dir, exist_ok=True)

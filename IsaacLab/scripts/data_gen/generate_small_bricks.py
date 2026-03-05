@@ -97,7 +97,7 @@ class SmallBricksBuilder:
 
 if __name__ == "__main__":
     # 使用 8x8x8 尺寸保证坐标范围在[0, 7]
-    builder = SmallBricksBuilder(length=8, width=8, height=8)
+    builder = SmallBricksBuilder(length=4, width=4, height=4)
     
     # 方块数量在[1, 10]之间
     num_blocks = random.randint(1, 10)

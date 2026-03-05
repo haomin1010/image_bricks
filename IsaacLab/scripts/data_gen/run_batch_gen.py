@@ -6,7 +6,7 @@ import argparse
 
 def run_batch(category):
     # 1. 设置路径
-    json_folder = os.path.join("ground_truth", category)
+    json_folder = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../assets/dataset/ground_truth", category))
     script_name = "batch_gen.py"
     
     # 2. 获取所有 JSON 文件
@@ -42,8 +42,8 @@ def run_batch(category):
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run batch generation script.")
-    parser.add_argument("--type", type=str, choices=["small", "large"], required=True, 
-                        help="Data category to process ('small' or 'large').")
+    parser.add_argument("--type", type=str, choices=["small", "small_size4", "large"], required=True, 
+                        help="Data category to process ('small', 'small_size4' or 'large').")
     args_cli = parser.parse_args()
     
     run_batch(args_cli.type)
