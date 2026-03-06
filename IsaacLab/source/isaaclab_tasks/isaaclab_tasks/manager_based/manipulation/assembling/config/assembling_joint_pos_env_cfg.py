@@ -23,6 +23,7 @@ from isaaclab_tasks.manager_based.manipulation.assembling.assembling_env_cfg imp
     ObservationsCfg,
     TerminationsCfg,
 )
+from isaaclab_tasks.manager_based.manipulation.assembling.cfg_override import DEFAULT_CUBE_SIZE
 from isaaclab_tasks.manager_based.manipulation.assembling.mdp.terminations import task_index_exceeds_max_cubes
 
 ASSEMBLING_TASK_ID = "multipicture_assembling_from_begin"
@@ -94,7 +95,7 @@ def _place_cubes_event(
     cube_names: list[str] | None = None,
     cube_name_prefix: str = "cube_",
     max_cubes: int = 0,
-    cube_size: float = 0.045,
+    cube_size: float = DEFAULT_CUBE_SIZE,
 ) -> None:
     env_ids_t = _resolve_event_env_ids(env, env_ids)
     if env_ids_t.numel() == 0:
@@ -156,7 +157,7 @@ class EventCfgAssembling(EventsCfg):
         params={
             "cube_name_prefix": "cube_",
             "max_cubes": int(ASSEMBLING_MAX_CUBES),
-            "cube_size": float(os.getenv("VAGEN_CUBE_SIZE", "0.045")),
+            "cube_size": float(os.getenv("VAGEN_CUBE_SIZE", str(DEFAULT_CUBE_SIZE))),
         },
     )
     setup_cubes_reset = EventTerm(
@@ -165,7 +166,7 @@ class EventCfgAssembling(EventsCfg):
         params={
             "cube_name_prefix": "cube_",
             "max_cubes": int(ASSEMBLING_MAX_CUBES),
-            "cube_size": float(os.getenv("VAGEN_CUBE_SIZE", "0.045")),
+            "cube_size": float(os.getenv("VAGEN_CUBE_SIZE", str(DEFAULT_CUBE_SIZE))),
         },
     )
 
@@ -208,12 +209,12 @@ class AssemblingCubeStackEnvCfg(AssemblingEnvCfg):
         )
         cube_names = [f"cube_{i + 1}" for i in range(int(max_cubes))]
         half_width = (int(grid_size) + 1) * float(cell_size) / 2.0
-        source_pick_pos_x = 0.5
+        source_pick_pos_x = 0.3
         source_pick_pos_y = -0.35
 
         aligned_poses = _build_aligned_cube_poses(
             max_cubes=int(max_cubes),
-            cube_size=0.045,
+            cube_size=float(os.getenv("VAGEN_CUBE_SIZE", str(DEFAULT_CUBE_SIZE))),
             source_pick_pos_x=source_pick_pos_x,
             source_pick_pos_y=source_pick_pos_y,
         )

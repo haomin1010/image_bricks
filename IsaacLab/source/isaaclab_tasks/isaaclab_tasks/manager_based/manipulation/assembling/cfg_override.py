@@ -38,13 +38,14 @@ FRANKA_ARM_JOINT_NAMES = [
 ]
 FRANKA_ARM_ONLY_CFG = FRANKA_PANDA_CFG.copy()
 FRANKA_ARM_ONLY_CFG.init_state.joint_pos = {
-    "panda_joint1": 0.0,
-    "panda_joint2": -0.569,
-    "panda_joint3": 0.0,
-    "panda_joint4": -2.810,
-    "panda_joint5": 0.0,
-    "panda_joint6": 3.037,
-    "panda_joint7": 0.741,
+    # Match IsaacLab official stack task reset pose.
+    "panda_joint1": 0.0444,
+    "panda_joint2": -0.1894,
+    "panda_joint3": -0.1107,
+    "panda_joint4": -2.5148,
+    "panda_joint5": 0.0044,
+    "panda_joint6": 2.3775,
+    "panda_joint7": 0.6952,
     "panda_finger_joint.*": 0.04,
 }
 # Apply stiffer PD control suitable for differential IK task-space control
@@ -76,9 +77,9 @@ DEFAULT_GRID_ORIGIN: tuple[float, float, float] = (0.5, 0.0, 0.001)
 DEFAULT_GRID_SIZE = 8
 DEFAULT_GRID_LINE_THICKNESS = 0.001
 DEFAULT_GRID_CELL_SIZE = 0.055 + DEFAULT_GRID_LINE_THICKNESS
-# Downward-pointing reset pose: J=[0,-0.785,0,-2.356,0,1.571,0.785]
-# Arm starts with wrist pointing DOWN so the IK doesn't need to flip 180°.
-DEFAULT_ARM_RESET_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+DEFAULT_CUBE_SIZE = 0.0203 * 2.0
+# Official IsaacLab stack reset pose (7 arm joints).
+DEFAULT_ARM_RESET_POSE = [0.0444, -0.1894, -0.1107, -2.5148, 0.0044, 2.3775, 0.6952]
 
 
 class AssemblingCfgOverride:
@@ -146,7 +147,9 @@ class AssemblingCfgOverride:
 
         return cls(
             enable_cameras=(os.getenv("VAGEN_ENABLE_CAMERAS", "1") != "0") if enable_cameras is None else enable_cameras,
-            cube_size=float(os.getenv("VAGEN_CUBE_SIZE", "0.045")) if cube_size is None else float(cube_size),
+            cube_size=float(os.getenv("VAGEN_CUBE_SIZE", str(DEFAULT_CUBE_SIZE)))
+            if cube_size is None
+            else float(cube_size),
             cube_properties=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,

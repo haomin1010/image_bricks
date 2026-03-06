@@ -27,7 +27,7 @@ def list_supported_task_ids() -> tuple[str, ...]:
     return SUPPORTED_TASK_IDS
 
 
-def build_env_cfg(*, task_name: str | None = None, cube_size: float = 0.045) -> AssemblingEnvCfg:
+def build_env_cfg(*, task_name: str | None = None, cube_size: float = 0.0203 * 2.0) -> AssemblingEnvCfg:
     _ = resolve_task_id(task_name)
     _ = cube_size
     return AssemblingCubeStackEnvCfg()

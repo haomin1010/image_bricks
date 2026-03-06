@@ -20,7 +20,7 @@ class StackingStateMachine:
         scene,
         cube_names,
         max_tasks=8,
-        cube_z_size=0.045,
+        cube_z_size=0.0203 * 2.0,
         grid_origin=[0.5, 0.0, 0.001],
         cell_size=0.056,
         grid_size=8,
@@ -108,7 +108,7 @@ class StackingStateMachine:
         target_pos_w = torch.zeros((self.num_envs, 3), device=self.device, dtype=root_pos_w.dtype)
         target_pos_w[:, 0] = 0.5
         target_pos_w[:, 1] = 0.0
-        target_pos_w[:, 2] = 0.45
+        target_pos_w[:, 2] = 0.30
         target_quat_w = torch.zeros((self.num_envs, 4), device=self.device, dtype=root_quat_w.dtype)
         target_quat_w[:, 1] = 1.0
         gripper_cmd_all = torch.ones((self.num_envs,), device=self.device)
@@ -139,7 +139,7 @@ class StackingStateMachine:
             approach_alpha = torch.clamp((approach_timer + 1.0) / float(40), min=0.0, max=1.0)
             target_pos_w[approach_env_ids, 0] = 0.5 + (approach_cube_pos_w[:, 0] - 0.5) * approach_alpha
             target_pos_w[approach_env_ids, 1] = 0.0 + approach_cube_pos_w[:, 1] * approach_alpha
-            target_pos_w[approach_env_ids, 2] = 0.45
+            target_pos_w[approach_env_ids, 2] = 0.30 + (0.15 - 0.30) * approach_alpha
             to_descend_cube_mask = self.state_timer[approach_env_ids] >= 40
             if torch.any(to_descend_cube_mask):
                 to_descend_cube_env_ids = approach_env_ids[to_descend_cube_mask]
@@ -161,12 +161,12 @@ class StackingStateMachine:
                 )
             descend_cube_pos_w = cube_pos_w_reshaped[descend_env_ids, descend_cube_slots]
             target_pos_w[descend_env_ids, 0:2] = descend_cube_pos_w[:, 0:2]
-            target_pos_w[descend_env_ids, 0] = descend_cube_pos_w[:, 0] + 0.025
+            target_pos_w[descend_env_ids, 0] = descend_cube_pos_w[:, 0] 
 
             descend_timer = self.state_timer[descend_env_ids].to(dtype=descend_cube_pos_w.dtype)
             descend_alpha = torch.clamp((descend_timer + 1.0) / float(36), min=0.0, max=1.0)
-            descend_target_z = descend_cube_pos_w[:, 2] + 0.06
-            target_pos_w[descend_env_ids, 2] = 0.45 + (descend_target_z - 0.45) * descend_alpha
+            descend_target_z = descend_cube_pos_w[:, 2]
+            target_pos_w[descend_env_ids, 2] = 0.30 + (descend_target_z - 0.30) * descend_alpha
 
             to_grasp_mask = self.state_timer[descend_env_ids] >= 36
             if torch.any(to_grasp_mask):
@@ -177,7 +177,7 @@ class StackingStateMachine:
                 self.grasp_hold_pos_w[to_grasp_env_ids, 0] = to_grasp_cube_pos_w[:, 0]
                 self.grasp_hold_pos_w[to_grasp_env_ids, 1] = to_grasp_cube_pos_w[:, 1]
                 self.grasp_hold_pos_w[to_grasp_env_ids, 2] = (
-                    to_grasp_cube_pos_w[:, 2] + 0.06 + 0.045
+                    to_grasp_cube_pos_w[:, 2]
                 )
                 self.grasp_hold_valid[to_grasp_env_ids] = True
 
@@ -185,11 +185,18 @@ class StackingStateMachine:
         grasp_mask = self.state == self.GRASP
         grasp_env_ids = torch.where(grasp_mask)[0]
         if grasp_env_ids.numel() > 0:
+            grasp_timer = self.state_timer[grasp_env_ids].to(dtype=target_pos_w.dtype)
             target_pos_w[grasp_env_ids] = self.grasp_hold_pos_w[grasp_env_ids]
-            gripper_cmd_all[grasp_env_ids] = -1.0
+            # Keep a tiny lift during closing to avoid pressing hard on the cube.
+            target_pos_w[grasp_env_ids, 2] = self.grasp_hold_pos_w[grasp_env_ids, 2] + 0.003
+            # Gentle close ramp: avoid instant full closing impulse.
+            close_alpha = torch.clamp(grasp_timer / float(12), min=0.0, max=1.0)
+            gripper_cmd_all[grasp_env_ids] = -1.0 * close_alpha
             grasp_cube_slots = torch.clamp(self.task_index[grasp_env_ids].to(torch.long), min=0, max=max(0, num_obs_cubes - 1))
             grasp_cube_pos_w = cube_pos_w_reshaped[grasp_env_ids, grasp_cube_slots]
-            grasp_cube_near_mask = torch.linalg.vector_norm(grasp_cube_pos_w - ee_pos_w[grasp_env_ids], dim=1) < 0.07
+            grasp_cube_near_mask = (
+                torch.linalg.vector_norm(grasp_cube_pos_w[:, 0:2] - ee_pos_w[grasp_env_ids, 0:2], dim=1) < 0.01
+            )
 
             if gripper_pos_obs is not None:
                 grasp_gripper_pos = gripper_pos_obs
@@ -210,7 +217,7 @@ class StackingStateMachine:
                 grasp_gripper_engaged_mask = torch.zeros((grasp_env_ids.numel(),), dtype=torch.bool, device=self.device)
 
             # GRASP -> LIFT on grasp confirmation from observation.
-            grasp_wait_done_mask = self.state_timer[grasp_env_ids] >= 8
+            grasp_wait_done_mask = self.state_timer[grasp_env_ids] >= 12
             grasp_confirmed_mask = torch.logical_and(
                 torch.logical_and(grasp_wait_done_mask, grasp_cube_near_mask), grasp_gripper_engaged_mask
             )
@@ -233,14 +240,14 @@ class StackingStateMachine:
             target_pos_w[lift_env_ids, 0:2] = lift_start_pos_w[:, 0:2] + (
                 lift_cube_pos_w[:, 0:2] - lift_start_pos_w[:, 0:2]
             ) * lift_alpha.unsqueeze(-1)
-            target_pos_w[lift_env_ids, 2] = lift_start_pos_w[:, 2] + (0.45 - lift_start_pos_w[:, 2]) * lift_alpha
+            target_pos_w[lift_env_ids, 2] = lift_start_pos_w[:, 2] + (0.30 - lift_start_pos_w[:, 2]) * lift_alpha
             to_approach_target_mask = self.state_timer[lift_env_ids] >= 40
             if torch.any(to_approach_target_mask):
                 to_approach_target_env_ids = lift_env_ids[to_approach_target_mask]
                 self.state[to_approach_target_env_ids] = self.APPROACH_TARGET
                 self.state_timer[to_approach_target_env_ids] = 0
 
-        # APPROACH_TARGET: smooth arithmetic interpolation to final goal XY at carry height Z=0.45.
+        # APPROACH_TARGET: smooth arithmetic interpolation to final goal XY at carry height Z=0.30.
         approach_target_mask = self.state == self.APPROACH_TARGET
         if torch.any(approach_target_mask):
             approach_target_env_ids = torch.where(approach_target_mask)[0]
@@ -254,12 +261,14 @@ class StackingStateMachine:
             target_pos_w[approach_target_env_ids, 0:2] = approach_start_cube_pos_w[:, 0:2] + (
                 goal_pos_w[:, 0:2] - approach_start_cube_pos_w[:, 0:2]
             ) * approach_alpha.unsqueeze(-1)
-            target_pos_w[approach_target_env_ids, 2] = 0.45
+            target_pos_w[approach_target_env_ids, 2] = 0.30
             to_descend_target_mask = self.state_timer[approach_target_env_ids] >= 40
             if torch.any(to_descend_target_mask):
                 to_descend_target_env_ids = approach_target_env_ids[to_descend_target_mask]
                 self.state[to_descend_target_env_ids] = self.DESCEND_TARGET
                 self.state_timer[to_descend_target_env_ids] = 0
+                # Keep release reference pose anchored to the target pose.
+                self.release_hold_pos_w[to_descend_target_env_ids] = goal_pos_w[to_descend_target_mask]
 
         # DESCEND_TARGET: per-step smooth descend, 1 cm each control step.
         descend_target_mask = self.state == self.DESCEND_TARGET
@@ -271,8 +280,9 @@ class StackingStateMachine:
             target_pos_w[descend_target_env_ids, 0:2] = goal_pos_w[:, 0:2]
             target_pos_w[descend_target_env_ids, 0] = goal_pos_w[:, 0]
             descend_timer = self.state_timer[descend_target_env_ids]
-            descend_target_z = 0.45 - 0.01 * descend_timer.to(dtype=goal_pos_w.dtype)
-            descend_target_z = torch.clamp(descend_target_z, min=0.07)
+            descend_target_z = 0.30 - 0.01 * descend_timer.to(dtype=goal_pos_w.dtype)
+            release_target_z = self.release_hold_pos_w[descend_target_env_ids, 2] + 0.10
+            descend_target_z = torch.maximum(descend_target_z, release_target_z)
             target_pos_w[descend_target_env_ids, 2] = descend_target_z
 
             final_stage_mask = descend_timer >= 38
@@ -282,14 +292,13 @@ class StackingStateMachine:
                 to_release_env_ids = descend_target_env_ids[to_release_mask]
                 self.state[to_release_env_ids] = self.RELEASE
                 self.state_timer[to_release_env_ids] = 0
-                self.release_hold_pos_w[to_release_env_ids] = ee_pos_w[to_release_env_ids]
 
         # RELEASE: hold terminal pose and open gripper.
         release_mask = self.state == self.RELEASE
         if torch.any(release_mask):
             release_env_ids = torch.where(release_mask)[0]
             target_pos_w[release_env_ids] = self.release_hold_pos_w[release_env_ids]
-            target_pos_w[release_env_ids, 2] = 0.07
+            target_pos_w[release_env_ids, 2] = self.release_hold_pos_w[release_env_ids, 2] + 0.10
             # After opening for a short while, start reverse-lift from target.
             to_ascend_target_mask = self.state_timer[release_env_ids] >= 20
             if torch.any(to_ascend_target_mask):
@@ -305,8 +314,9 @@ class StackingStateMachine:
             goal_pos_w = self.target_positions[ascend_target_env_ids, target_slot]
             target_pos_w[ascend_target_env_ids, 0:2] = goal_pos_w[:, 0:2]
             ascend_timer = self.state_timer[ascend_target_env_ids]
-            ascend_target_z = 0.07 + 0.01 * ascend_timer.to(dtype=goal_pos_w.dtype)
-            ascend_target_z = torch.clamp(ascend_target_z, max=0.45)
+            release_target_z = self.release_hold_pos_w[ascend_target_env_ids, 2] + 0.10
+            ascend_target_z = release_target_z + 0.01 * ascend_timer.to(dtype=goal_pos_w.dtype)
+            ascend_target_z = torch.clamp(ascend_target_z, max=0.30)
             target_pos_w[ascend_target_env_ids, 2] = ascend_target_z
 
             to_ascend_home_mask = ascend_timer >= 38
@@ -321,7 +331,7 @@ class StackingStateMachine:
             ascend_home_env_ids = torch.where(ascend_home_mask)[0]
             target_pos_w[ascend_home_env_ids, 0] = 0.5
             target_pos_w[ascend_home_env_ids, 1] = 0.0
-            target_pos_w[ascend_home_env_ids, 2] = 0.45
+            target_pos_w[ascend_home_env_ids, 2] = 0.30
             home_xy_dist = torch.linalg.vector_norm(
                 ee_pos_w[ascend_home_env_ids, 0:2] - target_pos_w[ascend_home_env_ids, 0:2], dim=1
             )
@@ -334,11 +344,27 @@ class StackingStateMachine:
                 self.new_task_available[done_home_env_ids] = False
                 self.new_task_index[done_home_env_ids] = -1
 
-        # Hard-code vertical-down quaternion for all active stages.
+        # Orientation policy:
+        # - GRASP / RELEASE / DESCEND_CUBE / DESCEND_TARGET: fully lock to vertical-down quaternion.
+        # - Other active stages: lock roll/pitch to vertical-down, keep current yaw.
         active_stage_mask = self.state != self.IDLE
-        if torch.any(active_stage_mask):
-            target_quat_w[active_stage_mask] = 0.0
-            target_quat_w[active_stage_mask, 1] = 1.0
+        full_lock_mask = (
+            (self.state == self.GRASP)
+            | (self.state == self.RELEASE)
+            | (self.state == self.DESCEND_CUBE)
+            | (self.state == self.DESCEND_TARGET)
+        )
+        rp_lock_mask = torch.logical_and(active_stage_mask, torch.logical_not(full_lock_mask))
+
+        if torch.any(full_lock_mask):
+            target_quat_w[full_lock_mask] = 0.0
+            target_quat_w[full_lock_mask, 1] = 1.0
+
+        if torch.any(rp_lock_mask):
+            _, _, current_yaw = math_utils.euler_xyz_from_quat(ee_quat_w[rp_lock_mask], wrap_to_2pi=False)
+            lock_roll = torch.full_like(current_yaw, torch.pi)
+            lock_pitch = torch.zeros_like(current_yaw)
+            target_quat_w[rp_lock_mask] = math_utils.quat_from_euler_xyz(lock_roll, lock_pitch, current_yaw)
 
         target_pos_all, target_quat_all = math_utils.subtract_frame_transforms(
             root_pos_w, root_quat_w, target_pos_w, target_quat_w
