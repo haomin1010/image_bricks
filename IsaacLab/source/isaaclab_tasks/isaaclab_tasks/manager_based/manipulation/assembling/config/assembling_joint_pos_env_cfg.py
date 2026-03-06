@@ -19,11 +19,11 @@ from isaaclab.utils import configclass
 from isaaclab_tasks.manager_based.manipulation.assembling.assembling_env_cfg import (
     ASSEMBLING_MAX_CUBES,
     AssemblingEnvCfg,
+    DEFAULT_CUBE_SIZE,
     EventsCfg,
     ObservationsCfg,
     TerminationsCfg,
 )
-from isaaclab_tasks.manager_based.manipulation.assembling.cfg_override import DEFAULT_CUBE_SIZE
 from isaaclab_tasks.manager_based.manipulation.assembling.mdp.terminations import task_index_exceeds_max_cubes
 
 ASSEMBLING_TASK_ID = "multipicture_assembling_from_begin"

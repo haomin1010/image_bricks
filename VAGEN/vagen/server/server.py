@@ -58,10 +58,14 @@ class VagenStackExecutionManager:
         # Shared state consumed by runtime terms.
         self.env.unwrapped._vagen_new_task_available = self.sm.new_task_available
         self.env.unwrapped._vagen_new_task_index = self.sm.new_task_index
+        # Runtime OSC yaw-axis gate: force yaw control on for all envs.
+        self.env.unwrapped._vagen_osc_yaw_lock_mask = torch.ones(
+            (self.num_envs,), dtype=torch.bool, device=self.device
+        )
         print(
-            "[INFO]: Differential IK enabled via action term "
+            "[INFO]: Operational-space control enabled via action term "
             "(input action=[ee_pos(3), ee_quat_wxyz(4), gripper(1)], "
-            "output=Franka joint targets + parallel-gripper cmd). "
+            "output=Franka joint efforts + parallel-gripper cmd). "
             f"ik_lambda_override={self.ik_lambda_val}"
         )
         print(
@@ -136,7 +140,7 @@ class VagenStackExecutionManager:
         grid_origin = self.sm.grid_origin
         cell_size = self.sm.cell_size
         env_origin = self.env.unwrapped.scene.env_origins[env_id]
-        target_x = grid_origin[0].item() + (g_x - 4) * cell_size
+        target_x = grid_origin[0].item() + (g_x - 4.5) * cell_size
         target_y = grid_origin[1].item() + (g_y - 4.5) * cell_size
         target_z = (g_z + 0.5) * self.cube_size + 0.002
         return env_origin + torch.tensor([target_x, target_y, target_z], device=env_origin.device)
@@ -242,6 +246,7 @@ class VagenStackExecutionManager:
             self.env.unwrapped._vagen_policy_obs = policy_obs
             self._update_gripper_center_marker(policy_obs)
         ee_pos_des, ee_quat_des, gripper_cmd = self.sm.compute_ee_pose_targets(obs)
+        self.env.unwrapped._vagen_osc_yaw_lock_mask.fill_(True)
         quat_norm = torch.linalg.vector_norm(ee_quat_des, dim=-1, keepdim=True).clamp_min(1e-8)
         ee_quat_des = ee_quat_des / quat_norm
         return torch.cat([ee_pos_des, ee_quat_des, gripper_cmd.unsqueeze(-1)], dim=-1)

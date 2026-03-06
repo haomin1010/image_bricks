@@ -57,6 +57,7 @@ class StackingStateMachine:
         self.grasp_hold_pos_w = torch.zeros((self.num_envs, 3), device=device)
         self.grasp_hold_valid = torch.zeros(self.num_envs, dtype=torch.bool, device=device)
         self.release_hold_pos_w = torch.zeros((self.num_envs, 3), device=device)
+        self._fixed_target_quat_wxyz = (0.0, 1.0, 0.0, 0.0)
 
     def set_env_targets(self, env_ids, targets):
         env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long).flatten()
@@ -82,6 +83,12 @@ class StackingStateMachine:
         self.grasp_hold_valid[env_ids] = False
         self.release_hold_pos_w[env_ids] = 0.0
 
+    @staticmethod
+    def _align_quaternion_hemisphere(target_quat: torch.Tensor, reference_quat: torch.Tensor) -> torch.Tensor:
+        """Keep target quaternions in the same hemisphere to avoid sign-flip jitter."""
+        same_hemisphere = torch.sum(target_quat * reference_quat, dim=-1, keepdim=True) >= 0.0
+        return torch.where(same_hemisphere, target_quat, -target_quat)
+
     def reset_all(self):
         self.reset_envs(torch.arange(self.num_envs, device=self.device))
 
@@ -101,7 +108,7 @@ class StackingStateMachine:
         root_quat_w = policy_obs.get("root_quat")
         env_origin = policy_obs.get("env_origin")
 
-        # abs-IK action expects pose in robot root frame. Convert observed ee pose first.
+        # Task-space action expects absolute pose in robot root frame. Convert observed ee pose first.
         ee_pos_w = ee_pos_env + env_origin
 
         # Default hold target in WORLD frame.
@@ -109,8 +116,6 @@ class StackingStateMachine:
         target_pos_w[:, 0] = 0.5
         target_pos_w[:, 1] = 0.0
         target_pos_w[:, 2] = 0.30
-        target_quat_w = torch.zeros((self.num_envs, 4), device=self.device, dtype=root_quat_w.dtype)
-        target_quat_w[:, 1] = 1.0
         gripper_cmd_all = torch.ones((self.num_envs,), device=self.device)
 
         # Active cube-driven states.
@@ -166,7 +171,7 @@ class StackingStateMachine:
             descend_timer = self.state_timer[descend_env_ids].to(dtype=descend_cube_pos_w.dtype)
             descend_alpha = torch.clamp((descend_timer + 1.0) / float(36), min=0.0, max=1.0)
             descend_target_z = descend_cube_pos_w[:, 2]
-            target_pos_w[descend_env_ids, 2] = 0.30 + (descend_target_z - 0.30) * descend_alpha
+            target_pos_w[descend_env_ids, 2] = 0.15 + (descend_target_z - 0.15) * descend_alpha
 
             to_grasp_mask = self.state_timer[descend_env_ids] >= 36
             if torch.any(to_grasp_mask):
@@ -344,27 +349,13 @@ class StackingStateMachine:
                 self.new_task_available[done_home_env_ids] = False
                 self.new_task_index[done_home_env_ids] = -1
 
-        # Orientation policy:
-        # - GRASP / RELEASE / DESCEND_CUBE / DESCEND_TARGET: fully lock to vertical-down quaternion.
-        # - Other active stages: lock roll/pitch to vertical-down, keep current yaw.
-        active_stage_mask = self.state != self.IDLE
-        full_lock_mask = (
-            (self.state == self.GRASP)
-            | (self.state == self.RELEASE)
-            | (self.state == self.DESCEND_CUBE)
-            | (self.state == self.DESCEND_TARGET)
-        )
-        rp_lock_mask = torch.logical_and(active_stage_mask, torch.logical_not(full_lock_mask))
-
-        if torch.any(full_lock_mask):
-            target_quat_w[full_lock_mask] = 0.0
-            target_quat_w[full_lock_mask, 1] = 1.0
-
-        if torch.any(rp_lock_mask):
-            _, _, current_yaw = math_utils.euler_xyz_from_quat(ee_quat_w[rp_lock_mask], wrap_to_2pi=False)
-            lock_roll = torch.full_like(current_yaw, torch.pi)
-            lock_pitch = torch.zeros_like(current_yaw)
-            target_quat_w[rp_lock_mask] = math_utils.quat_from_euler_xyz(lock_roll, lock_pitch, current_yaw)
+        # Rotation hardcoded for all stages.
+        target_quat_w = torch.zeros((self.num_envs, 4), device=self.device, dtype=root_quat_w.dtype)
+        target_quat_w[:, 0] = float(self._fixed_target_quat_wxyz[0])
+        target_quat_w[:, 1] = float(self._fixed_target_quat_wxyz[1])
+        target_quat_w[:, 2] = float(self._fixed_target_quat_wxyz[2])
+        target_quat_w[:, 3] = float(self._fixed_target_quat_wxyz[3])
+        target_quat_w = self._align_quaternion_hemisphere(target_quat_w, ee_quat_w)
 
         target_pos_all, target_quat_all = math_utils.subtract_frame_transforms(
             root_pos_w, root_quat_w, target_pos_w, target_quat_w
