@@ -296,7 +296,7 @@ class ActionsCfg:
             gravity_compensation=False,
             motion_stiffness_task=100.0,
             motion_damping_ratio_task=(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
-            motion_control_axes_task=(1, 1, 1, 1, 1, 0),
+            motion_control_axes_task=(1, 1, 1, 1, 1, 1),
             nullspace_control="position",
             nullspace_stiffness=10.0,
             nullspace_damping_ratio=1.0,
