@@ -39,6 +39,10 @@ DEFAULT_TASK = "multipicture_franka_stack_from_begin"
 DEFAULT_GOALS = "2,2,0"
 DEFAULT_CAMERAS = "0,1,2,3,4"
 DEFAULT_RAY_HEAD_LOG = "outputs/ray_test.log"
+HARDCODED_SERVER_VIDEO_LENGTH = 0
+HARDCODED_SERVER_VIDEO_INTERVAL = 0
+FORCE_ONE_CLICK_KEEP_RAY = True
+FORCE_ONE_CLICK_KILL_EXISTING_SERVER = True
 
 
 def parse_goals(raw: str) -> List[Dict[str, int]]:
@@ -80,6 +84,23 @@ def parse_bool(text: str) -> bool:
     if t in {"0", "false", "no", "n", "off"}:
         return False
     raise ValueError(f"Cannot parse boolean value from '{text}'")
+
+
+def enforce_hardcoded_flags(args: argparse.Namespace) -> None:
+    """Force selected one-click flags to fixed values regardless of CLI input."""
+    if bool(args.one_click_keep_ray) != FORCE_ONE_CLICK_KEEP_RAY:
+        print(
+            "[INFO] Ignoring --one-click-keep-ray CLI value; "
+            f"hardcoded to {str(FORCE_ONE_CLICK_KEEP_RAY).lower()}."
+        )
+    args.one_click_keep_ray = FORCE_ONE_CLICK_KEEP_RAY
+
+    if bool(args.one_click_kill_existing_server) != FORCE_ONE_CLICK_KILL_EXISTING_SERVER:
+        print(
+            "[INFO] Ignoring --one-click-kill-existing-server CLI value; "
+            f"hardcoded to {str(FORCE_ONE_CLICK_KILL_EXISTING_SERVER).lower()}."
+        )
+    args.one_click_kill_existing_server = FORCE_ONE_CLICK_KILL_EXISTING_SERVER
 
 
 def tail_text(path: str, max_lines: int = 80) -> str:
@@ -232,8 +253,57 @@ def wait_for_actor(actor_name: str, timeout_s: float, poll_s: float = 1.0) -> An
             time.sleep(poll_s)
 
 
+def wait_for_actor_absent(actor_name: str, timeout_s: float, poll_s: float = 0.5) -> bool:
+    start = time.time()
+    while True:
+        try:
+            ray.get_actor(actor_name)
+        except ValueError:
+            return True
+
+        elapsed = time.time() - start
+        if elapsed >= timeout_s:
+            return False
+        time.sleep(poll_s)
+
+
+def recycle_existing_server_if_requested(args: argparse.Namespace) -> None:
+    """Best-effort cleanup for stale detached actors before auto-start."""
+    if not (args.auto_start and args.one_click_kill_existing_server):
+        return
+
+    actor_name = args.actor_name
+    actor = None
+    try:
+        actor = ray.get_actor(actor_name)
+    except ValueError:
+        actor = None
+
+    if actor is not None:
+        print(
+            f"[INFO] Existing actor '{actor_name}' found and "
+            "--one-click-kill-existing-server=true; recycling before test."
+        )
+        try:
+            ray.kill(actor, no_restart=True)
+            if wait_for_actor_absent(actor_name, timeout_s=15.0, poll_s=0.5):
+                print(f"[INFO] Actor '{actor_name}' stopped.")
+            else:
+                print(
+                    f"[WARN] Actor '{actor_name}' still visible after kill attempt; "
+                    "continuing with current actor state."
+                )
+        except Exception as exc:
+            print(f"[WARN] Failed to kill actor '{actor_name}': {exc}")
+
+    # Also clean up possible orphan server process wrappers.
+    kill_existing_server_process()
+
+
 def start_server_if_needed(args: argparse.Namespace) -> Tuple[Optional[subprocess.Popen], Any]:
     actor_name = args.actor_name
+    recycle_existing_server_if_requested(args)
+
     try:
         actor = ray.get_actor(actor_name)
         print(f"[INFO] Found existing actor '{actor_name}'.")
@@ -270,8 +340,8 @@ def start_server_if_needed(args: argparse.Namespace) -> Tuple[Optional[subproces
         cmd.append("--no-headless")
     if args.server_record:
         cmd.append("--record")
-        cmd.extend(["--video-length", str(args.server_video_length)])
-        cmd.extend(["--video-interval", str(args.server_video_interval)])
+        cmd.extend(["--video-length", str(HARDCODED_SERVER_VIDEO_LENGTH)])
+        cmd.extend(["--video-interval", str(HARDCODED_SERVER_VIDEO_INTERVAL)])
     if args.server_extra_args.strip():
         cmd.extend(shlex.split(args.server_extra_args))
 
@@ -521,13 +591,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--one-click-keep-ray",
         type=parse_bool,
         default=False,
-        help="Keep Ray cluster running after one-click mode exits. true/false.",
+        help="Deprecated (ignored). Hardcoded to true.",
     )
     parser.add_argument(
         "--one-click-kill-existing-server",
         type=parse_bool,
         default=True,
-        help="Kill lingering start_isaac_server.py before one-click start. true/false.",
+        help=(
+            "Deprecated (ignored). Hardcoded to true; recycles stale actor/process in auto-start."
+        ),
     )
     parser.add_argument(
         "--ray-head-log",
@@ -613,13 +685,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--server-video-length",
         type=int,
         default=0,
-        help="Forwarded to server --video-length when --server-record is true (0 = until close/reset).",
+        help=(
+            "Deprecated (ignored). Video length is hardcoded to 0 when --server-record is true."
+        ),
     )
     parser.add_argument(
         "--server-video-interval",
         type=int,
         default=0,
-        help="Forwarded to server --video-interval when --server-record is true (0 = single clip).",
+        help=(
+            "Deprecated (ignored). Video interval is hardcoded to 0 when --server-record is true."
+        ),
     )
     parser.add_argument(
         "--server-cuda-visible-devices",
@@ -660,6 +736,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    enforce_hardcoded_flags(args)
     ray_head_started = False
 
     try:

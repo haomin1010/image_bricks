@@ -193,13 +193,13 @@ def main():
         "--video-length",
         type=int,
         default=0,
-        help="Recorded clip length in simulation steps (0 = keep recording until close/reset).",
+        help="Deprecated (ignored). Video length is hardcoded to 0.",
     )
     parser.add_argument(
         "--video-interval",
         type=int,
         default=0,
-        help="Start a new clip every N simulation steps (0 = start once at step 0).",
+        help="Deprecated (ignored). Video interval is hardcoded to 0.",
     )
     parser.add_argument("--ik-lambda-val", type=float, default=None)
     args = parser.parse_args()
@@ -332,10 +332,13 @@ def main():
     if args.record:
         out_dir = os.path.join(os.getcwd(), "outputs", "videos")
         os.makedirs(out_dir, exist_ok=True)
-        video_interval = int(args.video_interval)
-        video_length = int(args.video_length)
-        if video_length < 0:
-            video_length = 0
+        if int(args.video_length) != 0 or int(args.video_interval) != 0:
+            print(
+                "[INFO]: Ignoring CLI video params and using hardcoded values "
+                "video_length=0, video_interval=0"
+            )
+        video_interval = 0
+        video_length = 0
         video_prefix = f"isaac_record_{args.task.replace('/', '_')}_{int(time.time())}"
         video_run_dir = os.path.join(out_dir, video_prefix)
         os.makedirs(video_run_dir, exist_ok=True)

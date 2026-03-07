@@ -309,6 +309,24 @@ def _load_config(cfg_path: str, overrides: List[str]) -> DictConfig:
     return cfg
 
 
+def _resolve_sglang_log_path(cfg: Dict[str, Any], base_dir: str) -> str:
+    env_path = (os.environ.get("VAGEN_SGLANG_LOG") or "").strip()
+    if env_path:
+        log_path = os.path.expandvars(env_path)
+        if not os.path.isabs(log_path):
+            log_path = os.path.abspath(os.path.join(base_dir, log_path))
+        return log_path
+
+    fileroot = cfg.get("fileroot")
+    if isinstance(fileroot, str) and fileroot.strip():
+        resolved_fileroot = os.path.expandvars(fileroot.strip())
+        if not os.path.isabs(resolved_fileroot):
+            resolved_fileroot = os.path.abspath(os.path.join(base_dir, resolved_fileroot))
+        return os.path.join(resolved_fileroot, "outputs", "sglang_server.log")
+
+    return "/tmp/sglang_server.log"
+
+
 def main() -> None:
     # --- Ray and Isaac Server Initialization (Mirroring main_ppo.py logic) ---
     import ray
@@ -512,8 +530,10 @@ def main() -> None:
                         "--tp", str(tp_to_use),
                         "--mem-fraction-static", "0.2"
                     ]
-                    
-                    sglang_log_file = open("/tmp/sglang_server.log", "a")
+
+                    sglang_log_path = _resolve_sglang_log_path(cfg, base_dir)
+                    os.makedirs(os.path.dirname(sglang_log_path), exist_ok=True)
+                    sglang_log_file = open(sglang_log_path, "a")
                     sglang_server_process = subprocess.Popen(
                         cmd,
                         env=env,
@@ -538,7 +558,7 @@ def main() -> None:
                             pass
                         time.sleep(1)
                     if not online:
-                        print(">>> Timeout waiting for SGLang server. Check /tmp/sglang_server.log")
+                        print(f">>> Timeout waiting for SGLang server. Check {sglang_log_path}")
                 else:
                     print(f">>> Found existing process on port {port}, assuming it's SGLang.")
     resume_mode = str(run_cfg.get("resume", "skip_completed"))
