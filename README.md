@@ -221,4 +221,67 @@ bash scripts/eval_isaac.sh run.max_concurrent_jobs=2 experiment.dump_dir=./rollo
 - Isaac 启动失败 / 找不到 GPU：检查 `ISAAC_CUDA_VISIBLE_DEVICES`、`DEVICE` 是否匹配你的机器。
 - 需要 GUI：设 `ISAAC_HEADLESS=0`（并保证有可用的 `DISPLAY`）。
 - 不想每次都 stop ray：设 `VAGEN_EVAL_RAY_STOP_FORCE=0`。
+- 若要模拟倒塌终止：可临时设置 `VAGEN_ISAAC_COLLAPSE_MOCK_AFTER_ATTEMPT=N`，在第 `N` 次放置尝试时触发倒塌。
 
+---
+
+# image_bricks v2.1
+
+运行方法：`bash scripts/eval_isaac.sh`，会自动加载新的 reward 和 termination。
+
+## Isaac Reward / Termination
+
+本次在 `VAGEN/` 中补充了积木任务的规则奖励与终止逻辑，入口环境仍然是 `VAGEN/vagen/envs/isaac/isaac_managed_env.py:1`，但具体规则拆分到了独立模块，便于维护：
+
+- `VAGEN/vagen/envs/isaac/reward_manager.py:1`：规则奖励
+- `VAGEN/vagen/envs/isaac/termination_manager.py:1`：终止条件
+- `VAGEN/vagen/envs/isaac/task_spec.py:1`：读取 `IsaacLab/scripts/data_gen/convex_json_batch/*.json` ground truth
+
+### 奖励规则
+
+- 格式正确：`+0.1`
+- 放置位置正确（不悬空，且属于当前可达成目标的候选位置）：`+1.0`
+- 放置位置悬空：`-10.0`
+- 放置位置不悬空，但不属于目标候选：`-5.0`
+
+候选位置会随着当前已放置结构动态更新，因此同一个目标允许不同的合理搭建顺序。
+
+### 终止规则
+
+- 最大尝试次数：`ceil(目标积木数 × 1.5)`
+- IsaacLab 倒塌信号：当前预留接口，`IsaacManagedEnv` 会读取 step info 中的
+  `collapsed` / `collapse` / `has_collapsed` / `tower_collapsed`
+- `submit`：VLM 主动提交
+
+终止时会在返回的 `info` 中带上累计的 `total_reward`、终止原因和轨迹。
+
+### 配置位置
+
+奖励与终止相关默认值统一放在：
+
+- `scripts/isaac_reward_termination.sh`
+
+训练/评测 YAML 通过环境变量读取这些值，例如：
+
+```bash
+VAGEN_ISAAC_MAX_ATTEMPTS_FACTOR=1.5 \
+VAGEN_ISAAC_FLOATING_PLACEMENT_PENALTY=-10.0 \
+bash VAGEN/examples/isaac/train_grpo_qwen25vl3b.sh
+```
+
+评测也可以继续直接沿用 README 里的入口命令，只是在命令前覆写新参数：
+
+```bash
+VAGEN_ISAAC_FORMAT_REWARD=0.1 \
+VAGEN_ISAAC_CORRECT_PLACEMENT_REWARD=1.0 \
+VAGEN_ISAAC_FLOATING_PLACEMENT_PENALTY=-10.0 \
+VAGEN_ISAAC_NON_CANDIDATE_PENALTY=-5.0 \
+VAGEN_ISAAC_MAX_ATTEMPTS_FACTOR=1.5 \
+bash scripts/eval_isaac.sh
+```
+
+若你还需要传 OmegaConf overrides，也可以和以前一样直接追加在后面：
+
+```bash
+bash scripts/eval_isaac.sh run.max_concurrent_jobs=2 experiment.dump_dir=./rollouts/tmp
+```

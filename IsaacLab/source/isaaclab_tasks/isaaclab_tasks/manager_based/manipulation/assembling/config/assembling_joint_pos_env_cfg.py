@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import os
+import math
 
 import torch
 from isaaclab.assets import RigidObjectCfg

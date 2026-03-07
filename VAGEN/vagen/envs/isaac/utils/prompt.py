@@ -25,7 +25,10 @@ Each turn output exactly ONE of:
 1) Place a cube:
 {{"x": INT, "y": INT, "z": INT}}
 
-2) When you believe the task is complete:
+2) Query one or more cameras:
+{{"query": [INT, ...]}}
+
+3) When you believe the task is complete:
 submit
 """
 
@@ -47,7 +50,7 @@ def init_observation_template(img_placeholders: str, camera_labels: list = None)
     return f"""\
 [System]: Environment Reset. Study the TARGET structure carefully — these are the views you must replicate.
 {cam_section}
-Now place blocks one by one to reproduce the structure. Output {{"x": INT, "y": INT, "z": INT}} to place, or submit when done.
+Now place blocks one by one to reproduce the structure. Output {{"x": INT, "y": INT, "z": INT}} to place, {{"query": [INT, ...]}} to inspect cameras, or submit when done.
 """
 
 
@@ -62,7 +65,7 @@ def action_template(action_result: str, img_placeholder: str):
 [System]: {action_result}
 Camera 0 view:
 {img_placeholder}
-You may query camera views or place the next cube."""
+You may query camera views, place the next cube, or submit."""
 
 
 def query_result_template(camera_ids: list, img_placeholders: str):
@@ -84,6 +87,7 @@ def format_prompt(n_cameras: int = 3, add_example: bool = True):
     """Generate the output-format instructions appended to the system prompt."""
     base_prompt = """Each turn output exactly one action.
 To place a brick: {"x": INT, "y": INT, "z": INT}
+To inspect cameras: {"query": [INT, ...]}
 When all bricks are placed correctly: submit"""
 
     if add_example:
@@ -91,6 +95,7 @@ When all bricks are placed correctly: submit"""
 
 Examples:
   Place a brick: {"x": 2, "y": 3, "z": 0}
+  Query cameras: {"query": [0, 2]}
   Submit:        submit"""
         return base_prompt + examples
 
