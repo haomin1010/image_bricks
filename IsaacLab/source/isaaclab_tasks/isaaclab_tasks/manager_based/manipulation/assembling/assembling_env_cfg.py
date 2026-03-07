@@ -81,6 +81,10 @@ def _build_franka_osc_cfg() -> ArticulationCfg:
     robot_cfg.actuators["panda_shoulder"].damping = 0.0
     robot_cfg.actuators["panda_forearm"].stiffness = 0.0
     robot_cfg.actuators["panda_forearm"].damping = 0.0
+    # Soften parallel-gripper closure to avoid aggressive snap during grasp.
+    robot_cfg.actuators["panda_hand"].stiffness = 600.0
+    robot_cfg.actuators["panda_hand"].damping = 40.0
+    robot_cfg.actuators["panda_hand"].effort_limit_sim = 80.0
     robot_cfg.spawn.rigid_props.disable_gravity = True
 
     local_franka_usd = _resolve_local_franka_usd()
@@ -294,8 +298,8 @@ class ActionsCfg:
             inertial_dynamics_decoupling=True,
             partial_inertial_dynamics_decoupling=False,
             gravity_compensation=False,
-            motion_stiffness_task=100.0,
-            motion_damping_ratio_task=(1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            motion_stiffness_task=(60.0, 60.0, 60.0, 60.0, 60.0, 60.0),
+            motion_damping_ratio_task=(1.5, 1.5, 1.5, 1.5, 1.5, 1.5),
             motion_control_axes_task=(1, 1, 1, 1, 1, 1),
             nullspace_control="position",
             nullspace_stiffness=10.0,
@@ -313,7 +317,7 @@ class ActionsCfg:
         asset_name="robot",
         joint_names=["panda_finger.*"],
         open_command_expr={"panda_finger_.*": 0.04},
-        close_command_expr={"panda_finger_.*": 0.0},
+        close_command_expr={"panda_finger_.*": 0.01},
     )
 
 
@@ -448,20 +452,9 @@ class AssemblingEnvCfg(ManagerBasedRLEnvCfg):
             max_depenetration_velocity=5.0,
             disable_gravity=False,
         )
-        self.cube_mass_props = MassPropertiesCfg(mass=0.12)
+        self.cube_mass_props = MassPropertiesCfg(mass=0.02)
         self.cube_scale = (1.0, 1.0, 1.0)
         mdp.configure_stack_scene_cameras(scene_cfg=self.scene, enable_cameras=True, cube_size=DEFAULT_CUBE_SIZE)
-
-        if isinstance(self.actions.arm_action, OperationalSpaceControllerActionCfg):
-            self.actions.arm_action.joint_names = list(FRANKA_ARM_JOINT_NAMES)
-            self.actions.arm_action.body_name = ASSEMBLING_EE_BODY_NAME
-            if self.actions.arm_action.controller_cfg is not None:
-                self.actions.arm_action.controller_cfg.nullspace_control = "position"
-                self.actions.arm_action.controller_cfg.gravity_compensation = False
-                self.actions.arm_action.controller_cfg.motion_control_axes_task = (1, 1, 1, 1, 1, 0)
-                self.actions.arm_action.controller_cfg.nullspace_stiffness = 10.0
-                self.actions.arm_action.controller_cfg.nullspace_damping_ratio = 1.0
-            self.actions.arm_action.nullspace_joint_pos_target = "center"
 
         policy_obs = getattr(self.observations, "policy", None)
         if policy_obs is not None:

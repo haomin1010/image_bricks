@@ -58,10 +58,6 @@ class VagenStackExecutionManager:
         # Shared state consumed by runtime terms.
         self.env.unwrapped._vagen_new_task_available = self.sm.new_task_available
         self.env.unwrapped._vagen_new_task_index = self.sm.new_task_index
-        # Runtime OSC yaw-axis gate: force yaw control on for all envs.
-        self.env.unwrapped._vagen_osc_yaw_lock_mask = torch.ones(
-            (self.num_envs,), dtype=torch.bool, device=self.device
-        )
         print(
             "[INFO]: Operational-space control enabled via action term "
             "(input action=[ee_pos(3), ee_quat_wxyz(4), gripper(1)], "
@@ -246,9 +242,9 @@ class VagenStackExecutionManager:
             self.env.unwrapped._vagen_policy_obs = policy_obs
             self._update_gripper_center_marker(policy_obs)
         ee_pos_des, ee_quat_des, gripper_cmd = self.sm.compute_ee_pose_targets(obs)
-        self.env.unwrapped._vagen_osc_yaw_lock_mask.fill_(True)
         quat_norm = torch.linalg.vector_norm(ee_quat_des, dim=-1, keepdim=True).clamp_min(1e-8)
         ee_quat_des = ee_quat_des / quat_norm
+        gripper_cmd = gripper_cmd.to(dtype=ee_pos_des.dtype)
         return torch.cat([ee_pos_des, ee_quat_des, gripper_cmd.unsqueeze(-1)], dim=-1)
 
     def step(self, obs: dict):
