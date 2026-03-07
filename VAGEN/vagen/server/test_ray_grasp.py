@@ -35,7 +35,7 @@ import ray
 from ray.exceptions import GetTimeoutError
 
 
-DEFAULT_TASK = "multipicture_assembling_from_begin"
+DEFAULT_TASK = "multipicture_franka_stack_from_begin"
 DEFAULT_GOALS = "2,2,0"
 DEFAULT_CAMERAS = "0,1,2,3,4"
 DEFAULT_RAY_HEAD_LOG = "outputs/ray_test.log"
