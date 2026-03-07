@@ -209,10 +209,6 @@ class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         actions = ObsTerm(func=mdp.last_action)
-        root_pos = ObsTerm(func=mdp.root_pos_w)
-        root_quat = ObsTerm(func=mdp.root_quat_w)
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         cube_pos = ObsTerm(
             func=mdp.all_cube_positions_in_world_frame,
             params={"max_cubes": ASSEMBLING_MAX_CUBES},
@@ -221,19 +217,6 @@ class ObservationsCfg:
         cube_quat = ObsTerm(
             func=mdp.all_cube_orientations_in_world_frame,
             params={"max_cubes": ASSEMBLING_MAX_CUBES},
-        )
-        ee_pos = ObsTerm(func=mdp.ee_pos, params={"ee_frame_cfg": SceneEntityCfg("ee_frame")})
-        ee_quat = ObsTerm(func=mdp.ee_quat, params={"ee_frame_cfg": SceneEntityCfg("ee_frame")})
-        gripper_pos = ObsTerm(func=mdp.gripper_pos)
-        gripper_closed = ObsTerm(func=mdp.gripper_closed_flag)
-        grasped = ObsTerm(
-            func=mdp.object_grasped,
-            params={
-                "robot_cfg": SceneEntityCfg("robot"),
-                "ee_frame_cfg": SceneEntityCfg("ee_frame"),
-                "object_cfg": SceneEntityCfg("cube_1"),
-                "diff_threshold": 0.06,
-            },
         )
 
         def __post_init__(self):
@@ -311,6 +294,9 @@ class AssemblingEnvCfg(ManagerBasedRLEnvCfg):
         anchor_rot=(0.866, 0, 0, -0.5),
     )
 
+    # Optional override in derived env configs.
+    runtime_builder = None
+
     def __post_init__(self):
         self.decimation = 5
         self.episode_length_s = 600.0
@@ -322,3 +308,36 @@ class AssemblingEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physx.friction_correlation_distance = 0.00625
         if hasattr(self.sim.physx, "enable_external_forces_every_iteration"):
             self.sim.physx.enable_external_forces_every_iteration = True
+
+    def build_server_runtime(
+        self,
+        *,
+        env,
+        cube_names,
+        cube_size: float,
+        max_tasks: int,
+        grid_origin,
+        cell_size: float,
+        grid_size: int,
+    ):
+        """Unified runtime entrypoint used by server side."""
+        builder = getattr(self, "runtime_builder", None)
+        if callable(builder):
+            return builder(
+                env=env,
+                cube_names=cube_names,
+                cube_size=cube_size,
+                max_tasks=max_tasks,
+                grid_origin=grid_origin,
+                cell_size=cell_size,
+                grid_size=grid_size,
+            )
+        return mdp.build_franka_runtime(
+            env=env,
+            cube_names=cube_names,
+            cube_size=cube_size,
+            max_tasks=max_tasks,
+            grid_origin=grid_origin,
+            cell_size=cell_size,
+            grid_size=grid_size,
+        )

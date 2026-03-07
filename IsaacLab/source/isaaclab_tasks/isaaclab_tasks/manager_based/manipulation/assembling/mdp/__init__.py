@@ -13,4 +13,5 @@ from .franka_joint_pos import *  # noqa: F401, F403
 from .observations import *  # noqa: F401, F403
 from .reward import *  # noqa: F401, F403
 from .franka_runtime import *  # noqa: F401, F403
+from .teleport_runtime import *  # noqa: F401, F403
 from .terminations import *  # noqa: F401, F403

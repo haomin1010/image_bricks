@@ -10,7 +10,7 @@ import math
 
 import torch
 from isaaclab.assets import RigidObjectCfg
-from isaaclab.sim.schemas.schemas_cfg import MassPropertiesCfg, RigidBodyPropertiesCfg
+from isaaclab.sim.schemas.schemas_cfg import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 
 DEFAULT_CUBE_SIZE = 0.0203 * 2.0
@@ -101,6 +101,8 @@ def place_cubes_event(
     cube_name_prefix: str = "cube_",
     max_cubes: int = 0,
     cube_size: float = DEFAULT_CUBE_SIZE,
+    source_pick_pos_x: float = 0.5,
+    source_pick_pos_y: float = -0.35,
 ) -> None:
     env_ids_t = resolve_event_env_ids(env, env_ids)
     if env_ids_t.numel() == 0:
@@ -115,8 +117,8 @@ def place_cubes_event(
     aligned_poses = build_aligned_cube_poses(
         max_cubes=len(resolved_cube_names),
         cube_size=float(cube_size),
-        source_pick_pos_x=0.5,
-        source_pick_pos_y=-0.35,
+        source_pick_pos_x=float(source_pick_pos_x),
+        source_pick_pos_y=float(source_pick_pos_y),
     )
 
     env_origins = env.scene.env_origins[env_ids_t]
@@ -126,9 +128,10 @@ def place_cubes_event(
 
     zero_vel = torch.zeros((env_ids_t.numel(), 6), device=device, dtype=dtype)
     for idx, cube_name in enumerate(resolved_cube_names):
-        if not hasattr(env.scene, cube_name):
+        try:
+            cube_asset = env.scene[cube_name]
+        except KeyError:
             continue
-        cube_asset = env.scene[cube_name]
         pose = aligned_poses[idx]
         pos_local = torch.tensor(pose[0:3], device=device, dtype=dtype)
         quat_w = torch.tensor(pose[3:7], device=device, dtype=dtype).unsqueeze(0).repeat(env_ids_t.numel(), 1)
@@ -174,6 +177,7 @@ def configure_server_cube_layout(
     cube_name_prefix: str = "cube_",
     source_pick_pos_x: float = 0.5,
     source_pick_pos_y: float = -0.33,
+    collision_enabled: bool | None = None,
 ) -> list[str]:
     _, grid_size, _, _ = scene_cfg.get_grid_spec()
     blue_usd = scene_cfg.resolve_asset_path(
@@ -188,6 +192,9 @@ def configure_server_cube_layout(
             scale=tuple(cube_scale),
             rigid_props=cube_properties,
             mass_props=cube_mass_props,
+            collision_props=(
+                None if collision_enabled is None else CollisionPropertiesCfg(collision_enabled=bool(collision_enabled))
+            ),
         ),
     )
     setattr(scene_cfg, f"{cube_name_prefix}1", template_cube_cfg)

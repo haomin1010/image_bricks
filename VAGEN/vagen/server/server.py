@@ -34,12 +34,8 @@ class VagenStackExecutionManager:
             if max_tasks is None
             else max(1, int(max_tasks))
         )
-        # Build action-runtime wrapper from IsaacLab task side:
-        # state-machine + goal handling + done events + action synthesis.
-        from isaaclab_tasks.manager_based.manipulation.assembling.mdp.franka_runtime import (
-            build_franka_runtime,
-        )
-        self.action_runtime = build_franka_runtime(
+        # Build runtime through environment-side wrapper.
+        self.action_runtime = self.env.unwrapped.cfg.build_server_runtime(
             env=self.env,
             cube_names=self.cube_names,
             cube_size=self.cube_size,
@@ -55,10 +51,10 @@ class VagenStackExecutionManager:
         self.cam_names = list(getattr(mdp, "STACK_CAMERA_NAMES", getattr(mdp, "DEFAULT_CAMERA_NAMES", default_cam_names)))
 
         print(
-            "[INFO]: Operational-space control enabled via action term "
-            "(input action=[ee_pos(3), ee_quat_wxyz(4), gripper(1)], "
-            "output=Franka joint efforts + parallel-gripper cmd). "
-            f"ik_lambda_override={self.ik_lambda_val}"
+            "[INFO]: Runtime bootstrapped via env cfg "
+            f"(cfg={type(self.env.unwrapped.cfg).__name__}, "
+            f"impl={type(self.action_runtime).__name__}, "
+            f"ik_lambda_override={self.ik_lambda_val})"
         )
         print(
             f"[INFO]: Action runtime initialized by manager "

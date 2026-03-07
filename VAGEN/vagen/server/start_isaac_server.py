@@ -487,11 +487,12 @@ def main():
                         continue
             
 
-            # Camera readback is expensive. Only capture frames when proxy
-            # requests are pending; video recording is handled by RecordVideo.
-            exec_mgr.capture_requested_images(commands=commands, proxy_actor=proxy_actor)
-
             obs = exec_mgr.step(obs)
+
+            # Capture after stepping so returned images reflect the latest state
+            # (helps reduce temporal ghosting artifacts after teleport updates).
+            # Camera readback is expensive, so only do this when requests exist.
+            exec_mgr.capture_requested_images(commands=commands, proxy_actor=proxy_actor)
 
     except KeyboardInterrupt:
         shutdown_reason = "keyboard interrupt"

@@ -9,6 +9,9 @@ import os
 
 from isaaclab.assets import ArticulationCfg
 from isaaclab.envs.mdp.actions.actions_cfg import BinaryJointPositionActionCfg, OperationalSpaceControllerActionCfg
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
+from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.sensors import FrameTransformerCfg
@@ -46,6 +49,49 @@ class FrankaStackActionsCfg:
 
     arm_action: OperationalSpaceControllerActionCfg = mdp.build_franka_osc_action_cfg()
     gripper_action: BinaryJointPositionActionCfg = mdp.build_franka_gripper_action_cfg()
+
+
+@configclass
+class FrankaStackObservationsCfg:
+    """Franka-specific observation terms."""
+
+    @configclass
+    class PolicyCfg(ObsGroup):
+        actions = ObsTerm(func=mdp.last_action)
+        root_pos = ObsTerm(func=mdp.root_pos_w)
+        root_quat = ObsTerm(func=mdp.root_quat_w)
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel)
+        cube_pos = ObsTerm(
+            func=mdp.all_cube_positions_in_world_frame,
+            params={"max_cubes": ASSEMBLING_MAX_CUBES},
+        )
+        env_origin = ObsTerm(func=mdp.env_origin)
+        cube_quat = ObsTerm(
+            func=mdp.all_cube_orientations_in_world_frame,
+            params={"max_cubes": ASSEMBLING_MAX_CUBES},
+        )
+        ee_pos = ObsTerm(func=mdp.ee_pos, params={"ee_frame_cfg": SceneEntityCfg("ee_frame")})
+        ee_quat = ObsTerm(func=mdp.ee_quat, params={"ee_frame_cfg": SceneEntityCfg("ee_frame")})
+        gripper_pos = ObsTerm(func=mdp.gripper_pos)
+        gripper_closed = ObsTerm(func=mdp.gripper_closed_flag)
+        grasped = ObsTerm(
+            func=mdp.object_grasped,
+            params={
+                "robot_cfg": SceneEntityCfg("robot"),
+                "ee_frame_cfg": SceneEntityCfg("ee_frame"),
+                "object_cfg": SceneEntityCfg("cube_1"),
+                "diff_threshold": 0.06,
+            },
+        )
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = False
+
+    policy: PolicyCfg = PolicyCfg()
+    rgb_camera: ObservationsCfg.RGBCameraPolicyCfg = ObservationsCfg.RGBCameraPolicyCfg()
+    subtask_terms = None
 
 
 @configclass
@@ -92,9 +138,10 @@ class FrankaStackEventsCfg(EventsCfg):
 class FrankaStackEnvCfg(AssemblingEnvCfg):
     """Default Franka stack environment."""
 
+    runtime_builder = staticmethod(mdp.build_franka_runtime)
     scene: FrankaStackSceneCfg = FrankaStackSceneCfg(num_envs=1, env_spacing=2.5, replicate_physics=False)
     actions: FrankaStackActionsCfg = FrankaStackActionsCfg()
-    observations: ObservationsCfg = ObservationsCfg()
+    observations: FrankaStackObservationsCfg = FrankaStackObservationsCfg()
     terminations: FrankaStackTerminationsCfg = FrankaStackTerminationsCfg()
     events: FrankaStackEventsCfg = FrankaStackEventsCfg()
     gripper_joint_names = ["panda_finger_.*"]
