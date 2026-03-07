@@ -11,5 +11,10 @@ envs:
       image_size: [256, 256]
       grid_size: 8
       max_steps: 200
-      format_reward: 0.1
-      success_reward: 1.0
+      format_reward: ${oc.env:VAGEN_ISAAC_FORMAT_REWARD,0.1}
+      correct_placement_reward: ${oc.env:VAGEN_ISAAC_CORRECT_PLACEMENT_REWARD,1.0}
+      floating_placement_penalty: ${oc.env:VAGEN_ISAAC_FLOATING_PLACEMENT_PENALTY,-10.0}
+      non_candidate_penalty: ${oc.env:VAGEN_ISAAC_NON_CANDIDATE_PENALTY,-5.0}
+      max_attempts_factor: ${oc.env:VAGEN_ISAAC_MAX_ATTEMPTS_FACTOR,1.5}
+      ground_truth_root: ${oc.env:VAGEN_ISAAC_GROUND_TRUTH_ROOT,}
+      collapse_mock_after_attempt: ${oc.env:VAGEN_ISAAC_COLLAPSE_MOCK_AFTER_ATTEMPT,-1}

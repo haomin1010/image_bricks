@@ -13,6 +13,8 @@ if [[ -n "${__IMAGE_BRICKS_TEMPLATE_SH_LOADED:-}" ]]; then
 fi
 __IMAGE_BRICKS_TEMPLATE_SH_LOADED=1
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/isaac_reward_termination.sh"
+
 vagen__abspath() {
   local p="$1"
   (cd "$p" 2>/dev/null && pwd)
@@ -45,6 +47,24 @@ vagen__has_override() {
       return 0
     fi
   done
+  return 1
+}
+
+vagen__first_arg_is_config_path() {
+  # Treat the first CLI arg as a config path only when it clearly looks like one.
+  # This preserves the historical "bash ...run_eval.sh foo=bar" override style.
+  local arg="${1:-}"
+  if [[ -z "$arg" || "$arg" == *=* ]]; then
+    return 1
+  fi
+  if [[ -f "$arg" ]]; then
+    return 0
+  fi
+  case "$arg" in
+    *.yaml|*.yml|*.json)
+      return 0
+      ;;
+  esac
   return 1
 }
 
@@ -170,4 +190,3 @@ vagen_eval_run() {
 
   python3 -m vagen.evaluate.run_eval --config "$cfg_path" "${final_overrides[@]}"
 }
-

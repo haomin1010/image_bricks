@@ -25,6 +25,8 @@ export NO_PROXY=localhost,127.0.0.1
 # 获取脚本所在目录的绝对路径，并推导出项目根目录
 SCRIPT_DIR=$(cd "$(dirname "$0")"; pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.."; pwd)  # 假设结构是 VAGEN/examples/isaac/脚本
+REPO_ROOT=$(cd "$SCRIPT_DIR/../../.."; pwd)
+source "${REPO_ROOT}/scripts/isaac_reward_termination.sh"
 cd ${PROJECT_ROOT}
 export VERL_CONFIG_PATH="${PROJECT_ROOT}/verl/verl/trainer/config"
 
