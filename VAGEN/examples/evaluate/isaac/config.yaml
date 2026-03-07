@@ -9,6 +9,7 @@ envs:
     max_turns: 15
     config:
       backend: isaac
+      dataset_root: ${fileroot}/assets/snapshots/test01
       n_views: 3
       image_size: [224, 224]
       max_steps: 200
@@ -67,4 +68,3 @@ backends:
     max_retries: 6
     min_backoff: 0.5
     max_backoff: 8.0
-

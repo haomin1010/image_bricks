@@ -8,6 +8,7 @@ envs:
     max_turns: 15
     config:
       backend: isaac  # 关键：告诉 IsaacManagedEnv 使用真实的 Ray Actor
+      dataset_root: ${fileroot}/assets/snapshots/test01
       n_views: 3
       image_size: [224, 224]
     chat_config:
