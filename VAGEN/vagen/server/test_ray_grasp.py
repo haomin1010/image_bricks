@@ -232,8 +232,57 @@ def wait_for_actor(actor_name: str, timeout_s: float, poll_s: float = 1.0) -> An
             time.sleep(poll_s)
 
 
+def wait_for_actor_absent(actor_name: str, timeout_s: float, poll_s: float = 0.5) -> bool:
+    start = time.time()
+    while True:
+        try:
+            ray.get_actor(actor_name)
+        except ValueError:
+            return True
+
+        elapsed = time.time() - start
+        if elapsed >= timeout_s:
+            return False
+        time.sleep(poll_s)
+
+
+def recycle_existing_server_if_requested(args: argparse.Namespace) -> None:
+    """Best-effort cleanup for stale detached actors before auto-start."""
+    if not (args.auto_start and args.one_click_kill_existing_server):
+        return
+
+    actor_name = args.actor_name
+    actor = None
+    try:
+        actor = ray.get_actor(actor_name)
+    except ValueError:
+        actor = None
+
+    if actor is not None:
+        print(
+            f"[INFO] Existing actor '{actor_name}' found and "
+            "--one-click-kill-existing-server=true; recycling before test."
+        )
+        try:
+            ray.kill(actor, no_restart=True)
+            if wait_for_actor_absent(actor_name, timeout_s=15.0, poll_s=0.5):
+                print(f"[INFO] Actor '{actor_name}' stopped.")
+            else:
+                print(
+                    f"[WARN] Actor '{actor_name}' still visible after kill attempt; "
+                    "continuing with current actor state."
+                )
+        except Exception as exc:
+            print(f"[WARN] Failed to kill actor '{actor_name}': {exc}")
+
+    # Also clean up possible orphan server process wrappers.
+    kill_existing_server_process()
+
+
 def start_server_if_needed(args: argparse.Namespace) -> Tuple[Optional[subprocess.Popen], Any]:
     actor_name = args.actor_name
+    recycle_existing_server_if_requested(args)
+
     try:
         actor = ray.get_actor(actor_name)
         print(f"[INFO] Found existing actor '{actor_name}'.")
@@ -527,7 +576,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--one-click-kill-existing-server",
         type=parse_bool,
         default=True,
-        help="Kill lingering start_isaac_server.py before one-click start. true/false.",
+        help=(
+            "Kill lingering start_isaac_server.py before one-click or auto-start flows; "
+            "also recycles existing actor when discoverable. true/false."
+        ),
     )
     parser.add_argument(
         "--ray-head-log",
