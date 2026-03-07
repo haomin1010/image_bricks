@@ -13,6 +13,7 @@ class IsaacTerminationConfig:
     collapse_mock_after_attempt: int = -1
 
 
+
 @dataclass(frozen=True)
 class TerminationStatus:
     done: bool
