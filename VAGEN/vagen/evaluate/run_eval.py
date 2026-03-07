@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from omegaconf import DictConfig, OmegaConf
@@ -77,6 +78,27 @@ def _resolve_paths_in_config(obj: Any, base_dir: str) -> Any:
     if isinstance(obj, list):
         return [_resolve_paths_in_config(x, base_dir) for x in obj]
     return obj
+
+
+def _count_isaac_dataset_entries(dataset_root: str) -> int:
+    """Count valid Isaac dataset entries under dataset_root (strict subdir layout only)."""
+    root = Path(dataset_root)
+    if not root.exists():
+        return 0
+
+    img_suffixes = ["_top", "_front", "_side", "_iso", "_iso2"]
+
+    # Strict layout: dataset_root/<stem>/<stem>_{top,front,side,iso,iso2}.png + <stem>_data.json
+    subdir_count = 0
+    for subdir in sorted(root.iterdir()):
+        if not subdir.is_dir():
+            continue
+        stem = subdir.name
+        imgs = [subdir / f"{stem}{s}.png" for s in img_suffixes]
+        json_path = subdir / f"{stem}_data.json"
+        if all(p.exists() for p in imgs) and json_path.exists():
+            subdir_count += 1
+    return subdir_count
 
 
 def _parse_env_specs(cfg: Dict[str, Any]) -> List[EnvSpec]:
@@ -269,10 +291,34 @@ def _expand_jobs(
         env_cls = get_env_cls(spec.name)
         resolved_config = _resolve_paths_in_config(copy.deepcopy(spec.config), base_dir)
         seeds = generate_seeds_for_spec(spec, base_seed, spec_idx)
+        n_jobs = int(spec.n_envs)
+
+        # Isaac evaluation runs in strict full-dataset mode.
+        is_isaac_backend = str(resolved_config.get("backend", "")).strip().lower() == "isaac"
+        if is_isaac_backend:
+            dataset_root = resolved_config.get("dataset_root")
+            if not isinstance(dataset_root, str) or not dataset_root:
+                raise ValueError(
+                    f"Env '{spec.name}' (backend=isaac) requires a valid dataset_root."
+                )
+            entry_count = _count_isaac_dataset_entries(dataset_root)
+            if entry_count <= 0:
+                raise ValueError(
+                    f"Env '{spec.name}' (backend=isaac) found no valid dataset entries under: {dataset_root}"
+                )
+            n_jobs = int(entry_count)
+            seeds = list(range(entry_count))
+            logger.info(
+                "Expanded env '%s' to strict full-dataset mode: dataset_root=%s entries=%d seeds=[0..%d]",
+                spec.name,
+                dataset_root,
+                entry_count,
+                max(0, entry_count - 1),
+            )
         job_max_turns = int(spec.max_turns if spec.max_turns is not None else default_max_turns or 10)
         env_chat_cfg = spec.chat_config or {}
 
-        for i in range(spec.n_envs):
+        for i in range(n_jobs):
             seed = seeds[i]
             job_config = copy.deepcopy(resolved_config)
             chat_cfg = copy.deepcopy(env_chat_cfg)

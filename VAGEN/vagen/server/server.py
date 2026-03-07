@@ -65,11 +65,18 @@ class VagenStackExecutionManager:
         obs, _ = self.env.reset()
         return obs
 
-    def handle_reset(self, env_id: int, seed: int | None = None):
+    def handle_reset(
+        self,
+        env_id: int,
+        seed: int | None = None,
+        requested_num_tasks: int | None = None,
+    ):
         reset_options = {"env_ids": [env_id]}
         if seed is not None:
             reset_options["seed"] = int(seed)
         obs, _ = self.env.reset(options=reset_options)
+        if requested_num_tasks is not None and hasattr(self.action_runtime, "set_env_task_limit"):
+            self.action_runtime.set_env_task_limit(env_id, int(requested_num_tasks))
         self.action_runtime.on_reset_env(env_id)
         return obs
 

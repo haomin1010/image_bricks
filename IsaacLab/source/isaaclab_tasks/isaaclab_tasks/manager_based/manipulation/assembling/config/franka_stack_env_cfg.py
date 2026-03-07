@@ -13,7 +13,6 @@ from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.sensors import FrameTransformerCfg
 from isaaclab.utils import configclass
 
@@ -25,9 +24,7 @@ from isaaclab_tasks.manager_based.manipulation.assembling.assembling_env_cfg imp
     EventsCfg,
     ObjectTableSceneCfg,
     ObservationsCfg,
-    TerminationsCfg,
 )
-from isaaclab_tasks.manager_based.manipulation.assembling.mdp.terminations import task_index_exceeds_max_cubes
 from isaaclab_tasks.manager_based.manipulation.stack.mdp import franka_stack_events
 
 FRANKA_STACK_TASK_ID = "multipicture_franka_stack_from_begin"
@@ -95,16 +92,6 @@ class FrankaStackObservationsCfg:
 
 
 @configclass
-class FrankaStackTerminationsCfg(TerminationsCfg):
-    """Termination terms for assembling runtime."""
-
-    max_cube_exceeded = DoneTerm(
-        func=task_index_exceeds_max_cubes,
-        params={"max_cubes": int(ASSEMBLING_MAX_CUBES)},
-    )
-
-
-@configclass
 class FrankaStackEventsCfg(EventsCfg):
     """Event terms for assembling runtime."""
 
@@ -142,7 +129,6 @@ class FrankaStackEnvCfg(AssemblingEnvCfg):
     scene: FrankaStackSceneCfg = FrankaStackSceneCfg(num_envs=1, env_spacing=2.5, replicate_physics=False)
     actions: FrankaStackActionsCfg = FrankaStackActionsCfg()
     observations: FrankaStackObservationsCfg = FrankaStackObservationsCfg()
-    terminations: FrankaStackTerminationsCfg = FrankaStackTerminationsCfg()
     events: FrankaStackEventsCfg = FrankaStackEventsCfg()
     gripper_joint_names = ["panda_finger_.*"]
     gripper_open_val = 0.04
@@ -165,7 +151,7 @@ class FrankaStackEnvCfg(AssemblingEnvCfg):
             cube_properties=self.cube_properties,
             cube_mass_props=self.cube_mass_props,
             cube_scale=getattr(self, "cube_scale", (1.0, 1.0, 1.0)),
-            max_cubes=max(1, int(os.getenv("VAGEN_MAX_CUBES", "2"))),
+            max_cubes=max(1, int(os.getenv("VAGEN_MAX_CUBES", str(ASSEMBLING_MAX_CUBES)))),
             cube_size=float(os.getenv("VAGEN_CUBE_SIZE", str(DEFAULT_CUBE_SIZE))),
             cube_name_prefix="cube_",
             source_pick_pos_x=0.5,

@@ -307,6 +307,19 @@ class FrankaRuntime:
         self.sm = state_machine
         self.cube_size = float(cube_size)
         self.num_envs = int(env.unwrapped.num_envs)
+        default_limit = int(getattr(self.sm, "max_tasks", self.sm.target_positions.shape[1]))
+        self._task_limit_per_env = torch.full(
+            (self.num_envs,),
+            max(1, int(default_limit)),
+            dtype=torch.long,
+            device=self.env.unwrapped.device,
+        )
+        self._active_cube_count_per_env = torch.full(
+            (self.num_envs,),
+            max(1, len(getattr(self.sm, "cube_names", []))),
+            dtype=torch.long,
+            device=self.env.unwrapped.device,
+        )
         self._step_initial_task_idx: dict[int, dict[str, int | bool | None]] = {}
         self._gripper_center_marker = None
         self._gripper_marker_enabled = os.getenv("VAGEN_VIS_GRIPPER_CENTER", "1").strip().lower() not in {
@@ -365,6 +378,34 @@ class FrankaRuntime:
         self.sm.reset_envs([env_id])
         self.reset_tracking(env_id)
 
+    def set_env_task_limit(self, env_id: int, requested_num_tasks: int) -> None:
+        env_id_i = int(env_id)
+        requested = max(1, int(requested_num_tasks))
+        runtime_cap = int(getattr(self.sm, "max_tasks", self.sm.target_positions.shape[1]))
+        available_entities = max(1, len(getattr(self.sm, "cube_names", [])))
+        effective = min(requested, max(1, runtime_cap), available_entities)
+        self._task_limit_per_env[env_id_i] = int(effective)
+        self._active_cube_count_per_env[env_id_i] = int(effective)
+        self._hide_inactive_cubes(env_id=env_id_i, active_cube_count=int(effective))
+
+    def _hide_inactive_cubes(self, *, env_id: int, active_cube_count: int) -> None:
+        cube_names = list(getattr(self.sm, "cube_names", []))
+        scene = self.env.unwrapped.scene
+        device = self.env.unwrapped.device
+        env_id_i32 = torch.tensor([int(env_id)], device=device, dtype=torch.int32)
+        env_origin = scene.env_origins[int(env_id)].to(device=device, dtype=torch.float32)
+        base_pos = env_origin + torch.tensor([-5.0, -5.0, self.cube_size / 2.0], device=device, dtype=torch.float32)
+        quat_w = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device, dtype=torch.float32)
+        zero_vel = torch.zeros((1, 6), device=device, dtype=torch.float32)
+        for idx in range(int(active_cube_count), len(cube_names)):
+            cube_name = cube_names[idx]
+            cube_asset = scene[cube_name]
+            offset = torch.tensor([0.06 * float(idx - active_cube_count), 0.0, 0.0], device=device, dtype=torch.float32)
+            pos_w = (base_pos + offset).reshape(1, 3)
+            root_pose = torch.cat([pos_w, quat_w], dim=-1)
+            cube_asset.write_root_pose_to_sim(root_pose, env_ids=env_id_i32)
+            cube_asset.write_root_velocity_to_sim(zero_vel, env_ids=env_id_i32)
+
     def _parse_goal_to_world(self, env_id: int, goal: dict) -> torch.Tensor:
         if not isinstance(goal, dict):
             raise ValueError(f"Invalid goal type: {type(goal)}")
@@ -375,8 +416,8 @@ class FrankaRuntime:
         grid_origin = self.sm.grid_origin
         cell_size = self.sm.cell_size
         env_origin = self.env.unwrapped.scene.env_origins[env_id]
-        target_x = grid_origin[0].item() + (g_x - 4.5) * cell_size
-        target_y = grid_origin[1].item() + (g_y - 4.5) * cell_size
+        target_x = grid_origin[0].item() + (g_x - 3.5) * cell_size
+        target_y = grid_origin[1].item() + (g_y - 3.5) * cell_size
         target_z = (g_z + 0.5) * self.cube_size + 0.002
         return env_origin + torch.tensor([target_x, target_y, target_z], device=env_origin.device)
 
@@ -393,10 +434,10 @@ class FrankaRuntime:
             }
             return {"immediate_done": False, "done_payload": None}
 
-        max_tasks = int(getattr(self.sm, "max_tasks", self.sm.target_positions.shape[1]))
-        if current_task_idx >= max_tasks:
+        env_task_limit = int(self._task_limit_per_env[int(env_id)].item())
+        if current_task_idx >= env_task_limit:
             self.reset_tracking(env_id)
-            self.sm.num_tasks_per_env[env_id] = max_tasks
+            self.sm.num_tasks_per_env[env_id] = env_task_limit
             self.sm.state[env_id] = self.sm.IDLE
             return {
                 "immediate_done": True,

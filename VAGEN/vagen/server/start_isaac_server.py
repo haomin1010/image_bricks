@@ -77,10 +77,10 @@ class IsaacEnvServerProxy:
         return cmds
 
     # --- Methods for Trainer (Gym Remote Env) ---
-    async def remote_reset(self, env_id, seed):
+    async def remote_reset(self, env_id, reset_payload):
         """Reset a specific environment slot."""
-        print(f"Trainer requested reset for slot {env_id}")
-        self.commands.append((env_id, "reset", seed))
+        print(f"Trainer requested reset for slot {env_id} payload={reset_payload}")
+        self.commands.append((env_id, "reset", reset_payload))
         # Wait for the simulation loop to perform the reset and publish new images.
         # Poll for up to ~5 seconds; this provides a soft sync so trainers see the post-reset state.
         images = []
@@ -321,6 +321,7 @@ def main():
             cube_names = candidates
         else:
             cube_names = [f"cube_{i + 1}" for i in range(8)]
+    print(f"[INIT] cube_names from env cfg ({len(cube_names)}): {cube_names}")
 
     env = _run_with_init_heartbeat(
         "gym.make",
@@ -470,8 +471,14 @@ def main():
                 commands = []
             for env_id, cmd_type, data in commands:
                 if cmd_type == "reset":
-                    seed = data
-                    obs = exec_mgr.handle_reset(env_id=env_id, seed=seed)
+                    reset_payload = data if isinstance(data, dict) else {"seed": data}
+                    seed = reset_payload.get("seed")
+                    requested_num_tasks = reset_payload.get("num_tasks")
+                    obs = exec_mgr.handle_reset(
+                        env_id=env_id,
+                        seed=seed,
+                        requested_num_tasks=requested_num_tasks,
+                    )
                     _start_manual_recording(reason=f"remote_reset_env_{env_id}")
                 elif cmd_type == "step":
                     goal = data

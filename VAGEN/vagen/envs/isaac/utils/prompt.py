@@ -1,12 +1,9 @@
 """
 Prompt templates for the BrickIsaac environment.
 
-The LLM can perform two types of actions each turn:
-  1. **Query** – request camera views by ID to inspect the scene.
-  2. **Place** – output a coordinate to place the next brick.
+The LLM places one brick per turn until it decides to submit.
 
 After a *place* action the environment returns camera-0's view.
-After a *query* action the environment returns the requested camera views.
 """
 
 
@@ -25,10 +22,7 @@ Each turn output exactly ONE of:
 1) Place a cube:
 {{"x": INT, "y": INT, "z": INT}}
 
-2) Query one or more cameras:
-{{"query": [INT, ...]}}
-
-3) When you believe the task is complete:
+2) When you believe the task is complete:
 submit
 """
 
@@ -50,7 +44,7 @@ def init_observation_template(img_placeholders: str, camera_labels: list = None)
     return f"""\
 [System]: Environment Reset. Study the TARGET structure carefully — these are the views you must replicate.
 {cam_section}
-Now place blocks one by one to reproduce the structure. Output {{"x": INT, "y": INT, "z": INT}} to place, {{"query": [INT, ...]}} to inspect cameras, or submit when done.
+Now place blocks one by one to reproduce the structure. Output {{"x": INT, "y": INT, "z": INT}} to place, or submit when done.
 """
 
 
@@ -65,11 +59,11 @@ def action_template(action_result: str, img_placeholder: str):
 [System]: {action_result}
 Camera 0 view:
 {img_placeholder}
-You may query camera views, place the next cube, or submit."""
+Place the next cube or submit when done."""
 
 
 def query_result_template(camera_ids: list, img_placeholders: str):
-    """Template for the observation returned after a query action.
+    """Template for the observation returned after extra camera views.
 
     Args:
         camera_ids: List of camera IDs that were queried.
@@ -78,16 +72,15 @@ def query_result_template(camera_ids: list, img_placeholders: str):
     """
     cam_label = ", ".join(str(c) for c in camera_ids)
     return f"""\
-[System]: Query result for camera(s) {cam_label}:
+[System]: Extra camera view(s) {cam_label}:
 {img_placeholders}
-You may query more cameras, place a cube, or submit."""
+Place the next cube or submit when done."""
 
 
 def format_prompt(n_cameras: int = 3, add_example: bool = True):
     """Generate the output-format instructions appended to the system prompt."""
     base_prompt = """Each turn output exactly one action.
 To place a brick: {"x": INT, "y": INT, "z": INT}
-To inspect cameras: {"query": [INT, ...]}
 When all bricks are placed correctly: submit"""
 
     if add_example:
@@ -95,7 +88,6 @@ When all bricks are placed correctly: submit"""
 
 Examples:
   Place a brick: {"x": 2, "y": 3, "z": 0}
-  Query cameras: {"query": [0, 2]}
   Submit:        submit"""
         return base_prompt + examples
 
@@ -126,3 +118,25 @@ def get_checked_system_prompt(
         'Submit: submit\n'
     )
     return corrective
+
+
+def target_description(task_spec, max_attempts: int) -> str:
+    """Build a concise target description from task metadata."""
+    if int(getattr(task_spec, "total_blocks", 0)) <= 0:
+        return (
+            "Your task is to replicate the block structure shown in the image. "
+            "Observe the target configuration carefully and place blocks one by one "
+            "to reproduce it."
+        )
+
+    dims = tuple(getattr(task_spec, "dimensions", (0, 0, 0)))
+    length = int(dims[0]) if len(dims) > 0 else 0
+    width = int(dims[1]) if len(dims) > 1 else 0
+    height = int(dims[2]) if len(dims) > 2 else 0
+    total_blocks = int(getattr(task_spec, "total_blocks", 0))
+    return (
+        "Your task is to replicate the target structure shown in the images. "
+        f"The target contains {total_blocks} blocks in a {length}x{width}x{height} grid. "
+        f"You may make at most {int(max_attempts)} placement attempts. "
+        "A supported block on a valid target candidate is rewarded; floating or non-candidate placements are penalized."
+    )

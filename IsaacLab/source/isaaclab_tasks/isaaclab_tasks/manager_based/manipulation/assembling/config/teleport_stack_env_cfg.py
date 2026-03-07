@@ -8,7 +8,6 @@ from __future__ import annotations
 import os
 
 from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 
 from isaaclab_tasks.manager_based.manipulation.assembling import mdp
@@ -17,25 +16,13 @@ from isaaclab_tasks.manager_based.manipulation.assembling.assembling_env_cfg imp
     DEFAULT_CUBE_SIZE,
     AssemblingEnvCfg,
     EventsCfg,
-    TerminationsCfg,
 )
-from isaaclab_tasks.manager_based.manipulation.assembling.mdp.terminations import task_index_exceeds_max_cubes
 
 TELEPORT_STACK_TASK_ID = "multipicture_teleport_stack_from_begin"
 
 HIDDEN_CUBE_SOURCE_PICK_POS_X = -5.0
 HIDDEN_CUBE_SOURCE_PICK_POS_Y = -5.0
 DEFAULT_TELEPORT_CUBE_COLLISION_ENABLED = False
-
-
-@configclass
-class TeleportStackTerminationsCfg(TerminationsCfg):
-    """Termination terms for teleport stack runtime."""
-
-    max_cube_exceeded = DoneTerm(
-        func=task_index_exceeds_max_cubes,
-        params={"max_cubes": int(ASSEMBLING_MAX_CUBES)},
-    )
 
 
 @configclass
@@ -71,7 +58,6 @@ class TeleportStackEnvCfg(AssemblingEnvCfg):
     """Teleport stack environment config based on AssemblingEnvCfg."""
 
     runtime_builder = staticmethod(mdp.build_teleport_runtime)
-    terminations: TeleportStackTerminationsCfg = TeleportStackTerminationsCfg()
     events: TeleportStackEventsCfg = TeleportStackEventsCfg()
 
     def __post_init__(self):
@@ -92,7 +78,7 @@ class TeleportStackEnvCfg(AssemblingEnvCfg):
             cube_properties=self.cube_properties,
             cube_mass_props=self.cube_mass_props,
             cube_scale=getattr(self, "cube_scale", (1.0, 1.0, 1.0)),
-            max_cubes=max(1, int(os.getenv("VAGEN_MAX_CUBES", "2"))),
+            max_cubes=max(1, int(os.getenv("VAGEN_MAX_CUBES", str(ASSEMBLING_MAX_CUBES)))),
             cube_size=float(os.getenv("VAGEN_CUBE_SIZE", str(DEFAULT_CUBE_SIZE))),
             cube_name_prefix="cube_",
             source_pick_pos_x=HIDDEN_CUBE_SOURCE_PICK_POS_X,

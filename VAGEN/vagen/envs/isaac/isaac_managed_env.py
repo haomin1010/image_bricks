@@ -37,9 +37,9 @@ from PIL import Image
 from ..gym_image_env import GymImageEnv
 from .utils.prompt import (
     action_template,
-    format_prompt,
+    get_checked_system_prompt,
     init_observation_template,
-    system_prompt,
+    target_description,
 )
 from .reward_manager import IsaacRewardConfig, IsaacRewardManager, PlacementRewardResult
 from .task_spec import BrickPosition, TaskSpec, load_task_spec, scan_ground_truth_entries
@@ -204,7 +204,12 @@ class IsaacManagedEnv(GymImageEnv):
 
     async def system_prompt(self) -> Dict[str, Any]:
         """Return the system-level prompt observation."""
-        return {"obs_str": self._build_system_prompt()}
+        return {
+            "obs_str": get_checked_system_prompt(
+                n_cameras=self.config.n_cameras,
+                add_example=self.config.use_example_in_sys_prompt,
+            )
+        }
 
     async def reset(self, seed: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
@@ -221,10 +226,15 @@ class IsaacManagedEnv(GymImageEnv):
         if self._sub_env_id is None:
             self._sub_env_id = await server.allocate_env_id.remote()
 
+        self._current_ground_truth_path = self._select_ground_truth_path(seed)
+        self._current_task_spec = self._load_current_task_spec()
+        requested_num_tasks = int(max(1, self._current_task_spec.total_blocks))
+
         # Reset physics side (slot state / cube positions) but ignore its images
         try:
+            reset_payload = {"seed": int(seed), "num_tasks": requested_num_tasks}
             response = await asyncio.wait_for(
-                server.remote_reset.remote(self._sub_env_id, seed), timeout=120.0
+                server.remote_reset.remote(self._sub_env_id, reset_payload), timeout=120.0
             )
             env_info = response.get("info", {})
         except Exception as e:
@@ -241,22 +251,24 @@ class IsaacManagedEnv(GymImageEnv):
         self._dataset_images_cache = all_images
         self._latest_scene_images = list(all_images)
 
-        self._current_ground_truth_path = self._select_ground_truth_path(seed)
-        self._current_task_spec = self._load_current_task_spec()
         self.reward_manager.reset(self._current_task_spec)
         self.termination_manager.reset(self._current_task_spec)
 
         # Build target description from dataset JSON
-        target_desc = self._load_target_description(seed)
+        target_desc = target_description(
+            self._current_task_spec,
+            max_attempts=self.termination_manager.max_attempts,
+        )
         env_info["target_description"] = target_desc
 
         logger.info(
-            "reset: seed=%d dataset_index=%d gt=%s images=%d max_attempts=%d",
+            "reset: seed=%d dataset_index=%d gt=%s images=%d max_attempts=%d requested_num_tasks=%d",
             seed,
             seed % max(len(self._dataset_entries), 1),
             self._current_ground_truth_path.name if self._current_ground_truth_path else "none",
             len(all_images),
             self.termination_manager.max_attempts,
+            requested_num_tasks,
         )
 
         # Build initial observation: ALL dataset views so VLM understands the target from every angle
@@ -677,43 +689,9 @@ class IsaacManagedEnv(GymImageEnv):
                 images.append(Image.new("RGB", self.config.image_size, (0, 0, 0)))
         return images
 
-    def _load_target_description(self, seed: int) -> str:
-        """Return a concise task description based on the selected ground truth."""
-        task_spec = self._current_task_spec
-        if task_spec.total_blocks <= 0:
-            return (
-                "Your task is to replicate the block structure shown in the image. "
-                "Observe the target configuration carefully and place blocks one by one "
-                "to reproduce it."
-            )
-
-        length, width, height = task_spec.dimensions
-        return (
-            "Your task is to replicate the target structure shown in the images. "
-            f"The target contains {task_spec.total_blocks} blocks in a {length}x{width}x{height} grid. "
-            f"You may make at most {self.termination_manager.max_attempts} placement attempts. "
-            "A supported block on a valid target candidate is rewarded; floating or non-candidate placements are penalized."
-        )
-
     # ------------------------------------------------------------------
     # Prompt / observation helpers
     # ------------------------------------------------------------------
-
-    def _build_system_prompt(self) -> str:
-        """Compose the full system prompt string."""
-        try:
-            from .utils.prompt import get_checked_system_prompt
-        except Exception:
-            fmt = format_prompt(
-                n_cameras=self.config.n_cameras,
-                add_example=self.config.use_example_in_sys_prompt,
-            )
-            return system_prompt(n_cameras=self.config.n_cameras) + "\n" + fmt
-
-        return get_checked_system_prompt(
-            n_cameras=self.config.n_cameras,
-            add_example=self.config.use_example_in_sys_prompt,
-        )
 
     def _make_multi_image_obs(
         self,

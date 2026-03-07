@@ -41,6 +41,18 @@ class TeleportRuntime:
         self.new_task_index = torch.full((self.num_envs,), -1, dtype=torch.long, device=self.device)
         self._pending_step_events: dict[int, dict[str, bool | int]] = {}
         self._collision_enabled_cubes: set[tuple[int, str]] = set()
+        self._task_limit_per_env = torch.full(
+            (self.num_envs,),
+            max(1, min(self.max_tasks, max(1, len(self.cube_names)))),
+            dtype=torch.long,
+            device=self.device,
+        )
+        self._active_cube_count_per_env = torch.full(
+            (self.num_envs,),
+            max(1, len(self.cube_names)),
+            dtype=torch.long,
+            device=self.device,
+        )
 
         self._idle_action_template = self._build_idle_action_template()
 
@@ -69,6 +81,42 @@ class TeleportRuntime:
         self.new_task_index[env_id_i] = -1
         self.reset_tracking(env_id_i)
 
+    def set_env_task_limit(self, env_id: int, requested_num_tasks: int) -> None:
+        env_id_i = int(env_id)
+        requested = max(1, int(requested_num_tasks))
+        available_entities = max(1, len(self.cube_names))
+        effective = min(requested, self.max_tasks, available_entities)
+        self._task_limit_per_env[env_id_i] = int(effective)
+        self._active_cube_count_per_env[env_id_i] = int(effective)
+        self._hide_inactive_cubes(env_id=env_id_i, active_cube_count=int(effective))
+        if effective < requested:
+            print(
+                "[WARN][TeleportRuntime] task limit clipped "
+                f"(env={env_id_i}, requested={requested}, available_entities={available_entities}, "
+                f"runtime_max={self.max_tasks}, effective={effective})"
+            )
+
+    def _hide_inactive_cubes(self, *, env_id: int, active_cube_count: int) -> None:
+        if active_cube_count >= len(self.cube_names):
+            return
+        scene = self.env.unwrapped.scene
+        env_id_i32 = torch.tensor([int(env_id)], device=self.device, dtype=torch.int32)
+        env_origin = scene.env_origins[int(env_id)].to(device=self.device, dtype=torch.float32)
+        base_pos = env_origin + torch.tensor([-5.0, -5.0, self.cube_size / 2.0], device=self.device, dtype=torch.float32)
+        quat_w = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=self.device, dtype=torch.float32)
+        zero_vel = torch.zeros((1, 6), device=self.device, dtype=torch.float32)
+        for idx in range(int(active_cube_count), len(self.cube_names)):
+            cube_name = self.cube_names[idx]
+            try:
+                cube_asset = scene[cube_name]
+            except KeyError:
+                continue
+            offset = torch.tensor([0.06 * float(idx - active_cube_count), 0.0, 0.0], device=self.device, dtype=torch.float32)
+            pos_w = (base_pos + offset).reshape(1, 3)
+            root_pose = torch.cat([pos_w, quat_w], dim=-1)
+            cube_asset.write_root_pose_to_sim(root_pose, env_ids=env_id_i32)
+            cube_asset.write_root_velocity_to_sim(zero_vel, env_ids=env_id_i32)
+
     def reset_state_for_all_envs(self) -> None:
         for env_id in range(self.num_envs):
             self.on_reset_env(env_id)
@@ -91,8 +139,8 @@ class TeleportRuntime:
 
         g_x, g_y, g_z = float(goal["x"]), float(goal["y"]), float(goal["z"])
         env_origin = self.env.unwrapped.scene.env_origins[int(env_id)]
-        target_x = self.grid_origin[0].item() + (g_x - 4.5) * self.cell_size
-        target_y = self.grid_origin[1].item() + (g_y - 4.5) * self.cell_size
+        target_x = self.grid_origin[0].item() + (g_x - 3.5) * self.cell_size
+        target_y = self.grid_origin[1].item() + (g_y - 3.5) * self.cell_size
         target_z = (g_z + 0.5) * self.cube_size + 0.002
         return env_origin + torch.tensor([target_x, target_y, target_z], device=env_origin.device)
 
@@ -185,7 +233,8 @@ class TeleportRuntime:
             self._queue_step_event(env_id_i, done=True, success=bool(is_success), timeout=False)
             return {"immediate_done": False, "done_payload": None}
 
-        if current_task_idx >= self.max_tasks:
+        env_task_limit = int(self._task_limit_per_env[env_id_i].item())
+        if current_task_idx >= env_task_limit:
             self.new_task_available[env_id_i] = False
             self.new_task_index[env_id_i] = -1
             self._queue_step_event(env_id_i, done=True, success=False, timeout=True)
