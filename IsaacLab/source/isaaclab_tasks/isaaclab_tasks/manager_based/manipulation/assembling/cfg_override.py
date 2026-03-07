@@ -10,9 +10,9 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from isaaclab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg
+from isaaclab.envs.mdp.actions.actions_cfg import OperationalSpaceControllerActionCfg
 from isaaclab.sim.schemas.schemas_cfg import MassPropertiesCfg, RigidBodyPropertiesCfg
-from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG
+from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 
 from . import mdp
 
@@ -36,22 +36,24 @@ FRANKA_ARM_JOINT_NAMES = [
     "panda_joint6",
     "panda_joint7",
 ]
-FRANKA_ARM_ONLY_CFG = FRANKA_PANDA_CFG.copy()
+FRANKA_ARM_ONLY_CFG = FRANKA_PANDA_HIGH_PD_CFG.copy()
 FRANKA_ARM_ONLY_CFG.init_state.joint_pos = {
+    # User-specified neutral/reset arm posture.
     "panda_joint1": 0.0,
-    "panda_joint2": -0.569,
+    "panda_joint2": -0.5,
     "panda_joint3": 0.0,
-    "panda_joint4": -2.810,
+    "panda_joint4": -2.0,
     "panda_joint5": 0.0,
-    "panda_joint6": 3.037,
-    "panda_joint7": 0.741,
+    "panda_joint6": 1.5,
+    "panda_joint7": 0.7,
     "panda_finger_joint.*": 0.04,
 }
-# Apply stiffer PD control suitable for differential IK task-space control
-FRANKA_ARM_ONLY_CFG.actuators["panda_shoulder"].stiffness = 400.0
-FRANKA_ARM_ONLY_CFG.actuators["panda_shoulder"].damping = 80.0
-FRANKA_ARM_ONLY_CFG.actuators["panda_forearm"].stiffness = 400.0
-FRANKA_ARM_ONLY_CFG.actuators["panda_forearm"].damping = 80.0
+# OSC outputs effort targets, so disable joint-level PD on arm joints.
+FRANKA_ARM_ONLY_CFG.actuators["panda_shoulder"].stiffness = 0.0
+FRANKA_ARM_ONLY_CFG.actuators["panda_shoulder"].damping = 0.0
+FRANKA_ARM_ONLY_CFG.actuators["panda_forearm"].stiffness = 0.0
+FRANKA_ARM_ONLY_CFG.actuators["panda_forearm"].damping = 0.0
+FRANKA_ARM_ONLY_CFG.spawn.rigid_props.disable_gravity = True
 
 
 def _resolve_local_franka_usd() -> str | None:
@@ -76,9 +78,7 @@ DEFAULT_GRID_ORIGIN: tuple[float, float, float] = (0.5, 0.0, 0.001)
 DEFAULT_GRID_SIZE = 8
 DEFAULT_GRID_LINE_THICKNESS = 0.001
 DEFAULT_GRID_CELL_SIZE = 0.055 + DEFAULT_GRID_LINE_THICKNESS
-# Downward-pointing reset pose: J=[0,-0.785,0,-2.356,0,1.571,0.785]
-# Arm starts with wrist pointing DOWN so the IK doesn't need to flip 180°.
-DEFAULT_ARM_RESET_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+DEFAULT_CUBE_SIZE = 0.0203 * 2.0
 
 
 class AssemblingCfgOverride:
@@ -146,7 +146,9 @@ class AssemblingCfgOverride:
 
         return cls(
             enable_cameras=(os.getenv("VAGEN_ENABLE_CAMERAS", "1") != "0") if enable_cameras is None else enable_cameras,
-            cube_size=float(os.getenv("VAGEN_CUBE_SIZE", "0.045")) if cube_size is None else float(cube_size),
+            cube_size=float(os.getenv("VAGEN_CUBE_SIZE", str(DEFAULT_CUBE_SIZE)))
+            if cube_size is None
+            else float(cube_size),
             cube_properties=RigidBodyPropertiesCfg(
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
@@ -190,14 +192,18 @@ class AssemblingCfgOverride:
         )
 
         arm_action = getattr(getattr(env_cfg, "actions", None), "arm_action", None)
-        if isinstance(arm_action, DifferentialInverseKinematicsActionCfg):
+        if isinstance(arm_action, OperationalSpaceControllerActionCfg):
             arm_action.joint_names = list(arm_joint_names)
             arm_action.body_name = self.ee_body_name
-            if arm_action.controller is not None:
-                arm_action.controller.use_relative_mode = False
-                if arm_action.controller.ik_params is None:
-                    arm_action.controller.ik_params = {}
-                arm_action.controller.ik_params["lambda_val"] = self.ik_lambda_val
+            if arm_action.controller_cfg is not None:
+                arm_action.controller_cfg.nullspace_control = "position"
+                arm_action.controller_cfg.nullspace_stiffness = float(
+                    os.getenv("VAGEN_OSC_NULLSPACE_STIFFNESS", "20.0")
+                )
+                arm_action.controller_cfg.nullspace_damping_ratio = float(
+                    os.getenv("VAGEN_OSC_NULLSPACE_DAMPING_RATIO", "1.0")
+                )
+            arm_action.nullspace_joint_pos_target = "default"
 
         observations = getattr(env_cfg, "observations", None)
         policy_obs = getattr(observations, "policy", None)

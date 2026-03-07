@@ -247,7 +247,7 @@ def main():
         "task": args.task,
         "headless": args.headless,
         "enable_cameras": True,
-        "cube_size": 0.045,
+        "cube_size": 0.0203 * 2.0,
     }
     
     print(f"Starting Isaac server with config: {config}")
@@ -290,7 +290,7 @@ def main():
         "build_env_cfg",
         lambda: build_env_cfg(
             task_name=resolved_task_id,
-            cube_size=config.get("cube_size", 0.045),
+            cube_size=config.get("cube_size", 0.0203 * 2.0),
         ),
     )
 
@@ -388,7 +388,7 @@ def main():
         lambda: VagenStackExecutionManager(
             env=env,
             cube_names=cube_names,
-            cube_size=config.get("cube_size", 0.045),
+            cube_size=config.get("cube_size", 0.0203 * 2.0),
             ik_lambda_val=args.ik_lambda_val,
             cell_size=cell_size,
         ),

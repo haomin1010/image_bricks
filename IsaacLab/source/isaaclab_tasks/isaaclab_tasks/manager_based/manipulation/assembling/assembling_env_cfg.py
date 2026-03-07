@@ -8,10 +8,10 @@ from pathlib import Path
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
+from isaaclab.controllers.operational_space_cfg import OperationalSpaceControllerCfg
 from isaaclab.devices.openxr import XrCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg
+from isaaclab.envs.mdp.actions.actions_cfg import OperationalSpaceControllerActionCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -19,30 +19,81 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
+from isaaclab.sim.schemas.schemas_cfg import MassPropertiesCfg, RigidBodyPropertiesCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab_tasks.manager_based.manipulation.stack.mdp import franka_stack_events
 from isaaclab.markers.config import FRAME_MARKER_CFG
+from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 
-from .cfg_override import (
-    ASSEMBLING_MAX_CUBES,
-    DEFAULT_GRID_CELL_SIZE,
-    DEFAULT_GRID_LINE_THICKNESS,
-    DEFAULT_GRID_ORIGIN,
-    DEFAULT_GRID_SIZE,
-    FRANKA_ARM_JOINT_NAMES,
-    FRANKA_ARM_ONLY_CFG,
-    AssemblingCfgOverride,
-)
 from . import mdp
+
+
+FRANKA_ARM_JOINT_NAMES = [
+    "panda_joint1",
+    "panda_joint2",
+    "panda_joint3",
+    "panda_joint4",
+    "panda_joint5",
+    "panda_joint6",
+    "panda_joint7",
+]
+ASSEMBLING_EE_BODY_NAME = "panda_hand"
+ASSEMBLING_MAX_CUBES = int(getattr(mdp, "DEFAULT_MAX_CUBES", 8))
+DEFAULT_GRID_ORIGIN: tuple[float, float, float] = (0.5, 0.0, 0.001)
+DEFAULT_GRID_SIZE = 8
+DEFAULT_GRID_LINE_THICKNESS = 0.001
+DEFAULT_GRID_CELL_SIZE = 0.055 + DEFAULT_GRID_LINE_THICKNESS
+DEFAULT_CUBE_SIZE = 0.0203 * 2.0
 
 def _env_flag(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _resolve_local_franka_usd() -> str | None:
+    rel_path = Path("Robots/FrankaRobotics/FrankaPanda/franka.usd")
+    for parent in Path(__file__).resolve().parents:
+        assets_root = parent / "assets" / "Isaac"
+        candidate = assets_root / rel_path
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _build_franka_osc_cfg() -> ArticulationCfg:
+    robot_cfg = FRANKA_PANDA_HIGH_PD_CFG.copy()
+    robot_cfg.init_state.joint_pos = {
+        "panda_joint1": 0.0,
+        "panda_joint2": -0.5,
+        "panda_joint3": 0.0,
+        "panda_joint4": -2.0,
+        "panda_joint5": 0.0,
+        "panda_joint6": 1.5,
+        "panda_joint7": 0.7,
+        "panda_finger_joint.*": 0.04,
+    }
+    robot_cfg.actuators["panda_shoulder"].stiffness = 0.0
+    robot_cfg.actuators["panda_shoulder"].damping = 0.0
+    robot_cfg.actuators["panda_forearm"].stiffness = 0.0
+    robot_cfg.actuators["panda_forearm"].damping = 0.0
+    # Soften parallel-gripper closure to avoid aggressive snap during grasp.
+    robot_cfg.actuators["panda_hand"].stiffness = 600.0
+    robot_cfg.actuators["panda_hand"].damping = 40.0
+    robot_cfg.actuators["panda_hand"].effort_limit_sim = 80.0
+    robot_cfg.spawn.rigid_props.disable_gravity = True
+
+    local_franka_usd = _resolve_local_franka_usd()
+    if local_franka_usd is not None:
+        robot_cfg.spawn.usd_path = local_franka_usd
+    return robot_cfg
+
+
+FRANKA_ARM_ONLY_CFG = _build_franka_osc_cfg()
 
 
 def _build_default_ee_frame_cfg() -> FrameTransformerCfg:
@@ -237,12 +288,27 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
 @configclass
 class ActionsCfg:
     """Action specifications for the environment."""
-    arm_action: DifferentialInverseKinematicsActionCfg = DifferentialInverseKinematicsActionCfg(
+    arm_action: OperationalSpaceControllerActionCfg = OperationalSpaceControllerActionCfg(
         asset_name="robot",
         joint_names=["panda_joint.*"],
         body_name="panda_hand",
-        controller=DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls"),
-        body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(
+        controller_cfg=OperationalSpaceControllerCfg(
+            target_types=["pose_abs"],
+            impedance_mode="fixed",
+            inertial_dynamics_decoupling=True,
+            partial_inertial_dynamics_decoupling=False,
+            gravity_compensation=False,
+            motion_stiffness_task=(60.0, 60.0, 60.0, 60.0, 60.0, 60.0),
+            motion_damping_ratio_task=(1.5, 1.5, 1.5, 1.5, 1.5, 1.5),
+            motion_control_axes_task=(1, 1, 1, 1, 1, 1),
+            nullspace_control="position",
+            nullspace_stiffness=10.0,
+            nullspace_damping_ratio=1.0,
+        ),
+        nullspace_joint_pos_target="center",
+        position_scale=1.0,
+        orientation_scale=1.0,
+        body_offset=OperationalSpaceControllerActionCfg.OffsetCfg(
             pos=[0.0, 0.0, 0.1034],
         ),
     )
@@ -251,7 +317,7 @@ class ActionsCfg:
         asset_name="robot",
         joint_names=["panda_finger.*"],
         open_command_expr={"panda_finger_.*": 0.04},
-        close_command_expr={"panda_finger_.*": 0.0},
+        close_command_expr={"panda_finger_.*": 0.01},
     )
 
 
@@ -347,7 +413,7 @@ class EventsCfg:
         func=franka_stack_events.set_default_joint_pose,
         mode="reset",
         params={
-            "default_pose": [0.0444, -0.1894, -0.1107, -2.5148, 0.0044, 2.3775, 0.6952, 0.0400, 0.0400],
+            "default_pose": [0.0, -0.5, 0.0, -2.0, 0.0, 1.5, 0.7, 0.0400, 0.0400],
         },
     )
 
@@ -377,4 +443,44 @@ class AssemblingEnvCfg(ManagerBasedRLEnvCfg):
     )
 
     def __post_init__(self):
-        AssemblingCfgOverride.from_env().apply(self, arm_joint_names=FRANKA_ARM_JOINT_NAMES)
+        # Hardcoded runtime settings (do not route through cfg_override).
+        self.cube_properties = RigidBodyPropertiesCfg(
+            solver_position_iteration_count=16,
+            solver_velocity_iteration_count=1,
+            max_angular_velocity=1000.0,
+            max_linear_velocity=1000.0,
+            max_depenetration_velocity=5.0,
+            disable_gravity=False,
+        )
+        self.cube_mass_props = MassPropertiesCfg(mass=0.02)
+        self.cube_scale = (1.0, 1.0, 1.0)
+        mdp.configure_stack_scene_cameras(scene_cfg=self.scene, enable_cameras=True, cube_size=DEFAULT_CUBE_SIZE)
+
+        policy_obs = getattr(self.observations, "policy", None)
+        if policy_obs is not None:
+            cube_pos = getattr(policy_obs, "cube_pos", None)
+            if cube_pos is not None and hasattr(cube_pos, "params"):
+                cube_pos.params["max_cubes"] = ASSEMBLING_MAX_CUBES
+            cube_quat = getattr(policy_obs, "cube_quat", None)
+            if cube_quat is not None and hasattr(cube_quat, "params"):
+                cube_quat.params["max_cubes"] = ASSEMBLING_MAX_CUBES
+            ee_pos = getattr(policy_obs, "ee_pos", None)
+            if ee_pos is not None and hasattr(ee_pos, "params"):
+                ee_pos.params.pop("ee_body_name", None)
+            ee_quat = getattr(policy_obs, "ee_quat", None)
+            if ee_quat is not None and hasattr(ee_quat, "params"):
+                ee_quat.params.pop("ee_body_name", None)
+            grasped = getattr(policy_obs, "grasped", None)
+            if grasped is not None and hasattr(grasped, "params"):
+                grasped.params.pop("ee_body_name", None)
+
+        self.decimation = 5
+        self.episode_length_s = 600.0
+        self.sim.dt = 0.01
+        self.sim.render_interval = 5
+        self.sim.physx.bounce_threshold_velocity = 0.01
+        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 1024
+        self.sim.physx.friction_correlation_distance = 0.00625
+        if hasattr(self.sim.physx, "enable_external_forces_every_iteration"):
+            self.sim.physx.enable_external_forces_every_iteration = True

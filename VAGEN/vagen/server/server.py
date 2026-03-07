@@ -59,15 +59,59 @@ class VagenStackExecutionManager:
         self.env.unwrapped._vagen_new_task_available = self.sm.new_task_available
         self.env.unwrapped._vagen_new_task_index = self.sm.new_task_index
         print(
-            "[INFO]: Differential IK enabled via action term "
+            "[INFO]: Operational-space control enabled via action term "
             "(input action=[ee_pos(3), ee_quat_wxyz(4), gripper(1)], "
-            "output=Franka joint targets + parallel-gripper cmd). "
+            "output=Franka joint efforts + parallel-gripper cmd). "
             f"ik_lambda_override={self.ik_lambda_val}"
         )
         print(
             f"[INFO]: State machine initialized by manager "
             f"(max_tasks={resolved_max_tasks}, cell_size={float(cell_size):.4f})"
         )
+        self._gripper_center_marker = None
+        self._gripper_marker_enabled = os.getenv("VAGEN_VIS_GRIPPER_CENTER", "1").strip().lower() not in {
+            "0",
+            "false",
+            "off",
+            "no",
+        }
+        if self._gripper_marker_enabled:
+            self._init_gripper_center_marker()
+
+    def _init_gripper_center_marker(self) -> None:
+        """Initialize gripper-center marker visualization in world frame."""
+        try:
+            import isaaclab.sim as sim_utils
+            from isaaclab.markers import VisualizationMarkers
+            from isaaclab.markers.config import SPHERE_MARKER_CFG
+
+            marker_cfg = SPHERE_MARKER_CFG.copy()
+            marker_cfg.prim_path = "/Visuals/VAGEN/gripper_center"
+            marker_cfg.markers["sphere"].radius = 0.008
+            marker_cfg.markers["sphere"].visual_material = sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.0, 1.0, 1.0)
+            )
+            self._gripper_center_marker = VisualizationMarkers(marker_cfg)
+            self._gripper_center_marker.set_visibility(True)
+            print("[INFO]: Enabled gripper-center marker visualization at /Visuals/VAGEN/gripper_center")
+        except Exception as exc:
+            self._gripper_center_marker = None
+            print(f"[WARN]: Failed to initialize gripper-center marker visualization: {exc}")
+
+    def _update_gripper_center_marker(self, policy_obs: dict | None) -> None:
+        marker = self._gripper_center_marker
+        if marker is None or not isinstance(policy_obs, dict):
+            return
+        ee_pos_env = policy_obs.get("ee_pos")
+        env_origin = policy_obs.get("env_origin")
+        if ee_pos_env is None or env_origin is None:
+            return
+        if ee_pos_env.ndim != 2 or ee_pos_env.shape[-1] != 3:
+            return
+        if env_origin.ndim != 2 or env_origin.shape[-1] != 3:
+            return
+        # ee_pos is env-local for this task. Convert to world before visualization.
+        marker.visualize(translations=ee_pos_env + env_origin)
 
     def reset_all(self):
         obs, _ = self.env.reset()
@@ -92,7 +136,7 @@ class VagenStackExecutionManager:
         grid_origin = self.sm.grid_origin
         cell_size = self.sm.cell_size
         env_origin = self.env.unwrapped.scene.env_origins[env_id]
-        target_x = grid_origin[0].item() + (g_x - 4) * cell_size
+        target_x = grid_origin[0].item() + (g_x - 4.5) * cell_size
         target_y = grid_origin[1].item() + (g_y - 4.5) * cell_size
         target_z = (g_z + 0.5) * self.cube_size + 0.002
         return env_origin + torch.tensor([target_x, target_y, target_z], device=env_origin.device)
@@ -196,9 +240,11 @@ class VagenStackExecutionManager:
         policy_obs = obs.get("policy", obs) if isinstance(obs, dict) else None
         if isinstance(policy_obs, dict):
             self.env.unwrapped._vagen_policy_obs = policy_obs
+            self._update_gripper_center_marker(policy_obs)
         ee_pos_des, ee_quat_des, gripper_cmd = self.sm.compute_ee_pose_targets(obs)
         quat_norm = torch.linalg.vector_norm(ee_quat_des, dim=-1, keepdim=True).clamp_min(1e-8)
         ee_quat_des = ee_quat_des / quat_norm
+        gripper_cmd = gripper_cmd.to(dtype=ee_pos_des.dtype)
         return torch.cat([ee_pos_des, ee_quat_des, gripper_cmd.unsqueeze(-1)], dim=-1)
 
     def step(self, obs: dict):
