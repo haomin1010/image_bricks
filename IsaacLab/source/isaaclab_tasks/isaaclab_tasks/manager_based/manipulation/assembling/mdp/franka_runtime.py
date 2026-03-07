@@ -1,11 +1,20 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 from __future__ import annotations
 
-import torch
+import os
+
 import isaaclab.utils.math as math_utils
+import torch
+
+DEFAULT_CUBE_SIZE = 0.0203 * 2.0
 
 
-class StackingStateMachine:
-    """Six-state direct-target state machine (no smoothing/interpolation)."""
+class FrankaRuntimeStateMachine:
+    """Six-state direct-target state machine used by VAGEN server."""
 
     def __init__(
         self,
@@ -14,7 +23,7 @@ class StackingStateMachine:
         scene,
         cube_names,
         max_tasks=8,
-        cube_z_size=0.0203 * 2.0,
+        cube_z_size=DEFAULT_CUBE_SIZE,
         grid_origin=[0.5, 0.0, 0.001],
         cell_size=0.056,
         grid_size=8,
@@ -28,7 +37,7 @@ class StackingStateMachine:
         self.grid_origin = torch.tensor(grid_origin, device=device, dtype=torch.float32)
         self.cell_size = float(cell_size)
 
-        # Fields consumed by server.py.
+        # Fields consumed by server runtime.
         self.IDLE = -2
         self.IDLE_TO_TARGET = 0
         self.TARGET_TO_IDLE = 1
@@ -262,3 +271,236 @@ class StackingStateMachine:
             root_pos_w, root_quat_w, target_pos_w, target_quat_w
         )
         return target_pos_all, target_quat_all, gripper_cmd_all
+
+
+def build_franka_state_machine(
+    *,
+    num_envs,
+    device,
+    scene,
+    cube_names,
+    max_tasks=8,
+    cube_z_size=DEFAULT_CUBE_SIZE,
+    grid_origin=(0.5, 0.0, 0.001),
+    cell_size=0.056,
+    grid_size=8,
+):
+    """Build server-facing state-machine runtime from task config side."""
+    return FrankaRuntimeStateMachine(
+        num_envs=num_envs,
+        device=device,
+        scene=scene,
+        cube_names=cube_names,
+        max_tasks=max_tasks,
+        cube_z_size=cube_z_size,
+        grid_origin=grid_origin,
+        cell_size=cell_size,
+        grid_size=grid_size,
+    )
+
+
+class FrankaRuntime:
+    """Server runtime wrapper that encapsulates state-machine + action logic."""
+
+    def __init__(self, *, env, state_machine: FrankaRuntimeStateMachine, cube_size: float):
+        self.env = env
+        self.sm = state_machine
+        self.cube_size = float(cube_size)
+        self.num_envs = int(env.unwrapped.num_envs)
+        self._step_initial_task_idx: dict[int, dict[str, int | bool | None]] = {}
+        self._gripper_center_marker = None
+        self._gripper_marker_enabled = os.getenv("VAGEN_VIS_GRIPPER_CENTER", "1").strip().lower() not in {
+            "0",
+            "false",
+            "off",
+            "no",
+        }
+        if self._gripper_marker_enabled:
+            self._init_gripper_center_marker()
+
+    def _init_gripper_center_marker(self) -> None:
+        """Initialize gripper-center marker visualization in world frame."""
+        try:
+            import isaaclab.sim as sim_utils
+            from isaaclab.markers import VisualizationMarkers
+            from isaaclab.markers.config import SPHERE_MARKER_CFG
+
+            marker_cfg = SPHERE_MARKER_CFG.copy()
+            marker_cfg.prim_path = "/Visuals/VAGEN/gripper_center"
+            marker_cfg.markers["sphere"].radius = 0.008
+            marker_cfg.markers["sphere"].visual_material = sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.0, 1.0, 1.0)
+            )
+            self._gripper_center_marker = VisualizationMarkers(marker_cfg)
+            self._gripper_center_marker.set_visibility(True)
+            print("[INFO]: Enabled gripper-center marker visualization at /Visuals/VAGEN/gripper_center")
+        except Exception as exc:
+            self._gripper_center_marker = None
+            print(f"[WARN]: Failed to initialize gripper-center marker visualization: {exc}")
+
+    def _update_gripper_center_marker(self, policy_obs: dict | None) -> None:
+        marker = self._gripper_center_marker
+        if marker is None or not isinstance(policy_obs, dict):
+            return
+        ee_pos_env = policy_obs.get("ee_pos")
+        env_origin = policy_obs.get("env_origin")
+        if ee_pos_env is None or env_origin is None:
+            return
+        if ee_pos_env.ndim != 2 or ee_pos_env.shape[-1] != 3:
+            return
+        if env_origin.ndim != 2 or env_origin.shape[-1] != 3:
+            return
+        # ee_pos is env-local for this task. Convert to world before visualization.
+        marker.visualize(translations=ee_pos_env + env_origin)
+
+    def bind_shared_state(self) -> None:
+        # Shared state consumed by runtime terms.
+        self.env.unwrapped._vagen_new_task_available = self.sm.new_task_available
+        self.env.unwrapped._vagen_new_task_index = self.sm.new_task_index
+
+    def reset_tracking(self, env_id: int) -> None:
+        self._step_initial_task_idx.pop(int(env_id), None)
+
+    def on_reset_env(self, env_id: int) -> None:
+        self.sm.reset_envs([env_id])
+        self.reset_tracking(env_id)
+
+    def _parse_goal_to_world(self, env_id: int, goal: dict) -> torch.Tensor:
+        if not isinstance(goal, dict):
+            raise ValueError(f"Invalid goal type: {type(goal)}")
+        if not all(k in goal for k in ("x", "y", "z")):
+            raise KeyError("Goal must contain keys 'x','y','z'")
+
+        g_x, g_y, g_z = float(goal["x"]), float(goal["y"]), float(goal["z"])
+        grid_origin = self.sm.grid_origin
+        cell_size = self.sm.cell_size
+        env_origin = self.env.unwrapped.scene.env_origins[env_id]
+        target_x = grid_origin[0].item() + (g_x - 4.5) * cell_size
+        target_y = grid_origin[1].item() + (g_y - 4.5) * cell_size
+        target_z = (g_z + 0.5) * self.cube_size + 0.002
+        return env_origin + torch.tensor([target_x, target_y, target_z], device=env_origin.device)
+
+    def handle_step_goal(self, env_id: int, goal) -> dict:
+        is_submit = isinstance(goal, dict) and goal.get("type") == "submit"
+        current_task_idx = int(self.sm.task_index[env_id].item())
+        if is_submit:
+            num_tasks = int(self.sm.num_tasks_per_env[env_id].item())
+            is_success = current_task_idx >= num_tasks
+            self._step_initial_task_idx[int(env_id)] = {
+                "init_idx": int(current_task_idx),
+                "was_submit": True,
+                "submit_success": bool(is_success),
+            }
+            return {"immediate_done": False, "done_payload": None}
+
+        max_tasks = int(getattr(self.sm, "max_tasks", self.sm.target_positions.shape[1]))
+        if current_task_idx >= max_tasks:
+            self.reset_tracking(env_id)
+            self.sm.num_tasks_per_env[env_id] = max_tasks
+            self.sm.state[env_id] = self.sm.IDLE
+            return {
+                "immediate_done": True,
+                "done_payload": {
+                    "done": True,
+                    "success": False,
+                    "timeout": True,
+                    "new_task_available": False,
+                    "new_task_index": -1,
+                },
+            }
+
+        self._step_initial_task_idx[int(env_id)] = {
+            "init_idx": int(current_task_idx),
+            "was_submit": False,
+            "submit_success": None,
+        }
+        target_pos_w = self._parse_goal_to_world(env_id, goal)
+        self.sm.set_env_targets([env_id], target_pos_w)
+        return {"immediate_done": False, "done_payload": None}
+
+    def get_step_snapshot(self, env_id: int) -> dict[str, int | bool]:
+        return {
+            "task_index": int(self.sm.task_index[env_id].item()),
+            "state": int(self.sm.state[env_id].item()),
+            "num_tasks": int(self.sm.num_tasks_per_env[env_id].item()),
+            "new_task_available": bool(self.sm.new_task_available[env_id].item()),
+            "new_task_index": int(self.sm.new_task_index[env_id].item()),
+        }
+
+    def collect_completed_step_events(self) -> list[dict[str, int | bool]]:
+        events: list[dict[str, int | bool]] = []
+        for env_id in list(self._step_initial_task_idx.keys()):
+            snapshot = self.get_step_snapshot(int(env_id))
+            task_idx_now = int(snapshot["task_index"])
+            sm_state_now = int(snapshot["state"])
+
+            init_val = self._step_initial_task_idx[env_id]
+            init_idx = int(init_val.get("init_idx", 0))
+            was_submit = bool(init_val.get("was_submit", False))
+            submit_success = init_val.get("submit_success", None)
+
+            if (task_idx_now > init_idx) or sm_state_now == -1:
+                done_flag = True if was_submit else False
+                success_flag = done_flag if submit_success is None else bool(submit_success)
+                events.append(
+                    {
+                        "env_id": int(env_id),
+                        "done": bool(done_flag),
+                        "success": bool(success_flag),
+                        "timeout": False,
+                        "new_task_available": bool(snapshot["new_task_available"]),
+                        "new_task_index": int(snapshot["new_task_index"]),
+                        "task_index": int(task_idx_now),
+                        "state": int(sm_state_now),
+                        "num_tasks": int(snapshot["num_tasks"]),
+                    }
+                )
+                del self._step_initial_task_idx[env_id]
+        return events
+
+    def reset_state_for_all_envs(self) -> None:
+        for env_id in range(self.num_envs):
+            self.sm.reset_state(env_id)
+
+    def compute_joint_actions(self, obs: dict) -> torch.Tensor:
+        policy_obs = obs.get("policy", obs) if isinstance(obs, dict) else None
+        if isinstance(policy_obs, dict):
+            self.env.unwrapped._vagen_policy_obs = policy_obs
+            self._update_gripper_center_marker(policy_obs)
+        ee_pos_des, ee_quat_des, gripper_cmd = self.sm.compute_ee_pose_targets(obs)
+        quat_norm = torch.linalg.vector_norm(ee_quat_des, dim=-1, keepdim=True).clamp_min(1e-8)
+        ee_quat_des = ee_quat_des / quat_norm
+        gripper_cmd = gripper_cmd.to(dtype=ee_pos_des.dtype)
+        return torch.cat([ee_pos_des, ee_quat_des, gripper_cmd.unsqueeze(-1)], dim=-1)
+
+    def step(self, obs: dict):
+        actions = self.compute_joint_actions(obs)
+        obs, _, _, _, _ = self.env.step(actions)
+        return obs
+
+
+def build_franka_runtime(
+    *,
+    env,
+    cube_names,
+    cube_size=DEFAULT_CUBE_SIZE,
+    max_tasks=8,
+    grid_origin=(0.5, 0.0, 0.001),
+    cell_size=0.056,
+    grid_size=8,
+):
+    """Build action-runtime wrapper from task-config side for server usage."""
+    sm = build_franka_state_machine(
+        num_envs=int(env.unwrapped.num_envs),
+        device=env.unwrapped.device,
+        scene=env.unwrapped.scene,
+        cube_names=cube_names,
+        max_tasks=max_tasks,
+        cube_z_size=cube_size,
+        grid_origin=grid_origin,
+        cell_size=cell_size,
+        grid_size=grid_size,
+    )
+    runtime = FrankaRuntime(env=env, state_machine=sm, cube_size=cube_size)
+    runtime.bind_shared_state()
+    return runtime

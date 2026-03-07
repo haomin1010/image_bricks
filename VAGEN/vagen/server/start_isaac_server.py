@@ -184,7 +184,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--task", type=str, default="multipicture_assembling_from_begin")
+    parser.add_argument("--task", type=str, default="multipicture_franka_stack_from_begin")
     # Allow enabling/disabling headless mode via CLI
     parser.add_argument("--headless", dest="headless", action="store_true", help="Run Isaac in headless mode (no GUI).")
     parser.add_argument("--no-headless", dest="headless", action="store_false", help="Run Isaac with GUI (disable headless).")
