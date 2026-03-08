@@ -62,7 +62,8 @@ def load_task_spec(json_path: str | Path) -> TaskSpec:
     with path.open("r", encoding="utf-8") as file:
         payload = json.load(file)
 
-    dims = payload.get("dimensions", {})
+    data = payload.get("original_data", payload)
+    dims = data.get("dimensions", {})
     dimensions = (
         int(dims.get("length", 0)),
         int(dims.get("width", 0)),
@@ -74,7 +75,7 @@ def load_task_spec(json_path: str | Path) -> TaskSpec:
             y=int(block["y"]),
             z=int(block["z"]),
         )
-        for block in payload.get("blocks", [])
+        for block in data.get("blocks", [])
     )
     return TaskSpec(source_path=path, dimensions=dimensions, positions=positions)
 
