@@ -1,4 +1,4 @@
-# image_bricks v1.0
+# image_bricks v2.2
 
 ## Installation
 
@@ -285,3 +285,42 @@ bash scripts/eval_isaac.sh
 ```bash
 bash scripts/eval_isaac.sh run.max_concurrent_jobs=2 experiment.dump_dir=./rollouts/tmp
 ```
+
+## image_bricks v2.2
+
+运行方式保持不变，仍然使用：
+
+```bash
+bash scripts/eval_isaac.sh
+```
+
+也可以继续使用旧入口或直接传入同样的 OmegaConf overrides；配置文件读取方式没有变化，仍然通过 `scripts/*.sh` 和现有 YAML / 环境变量完成。
+
+## 2.2 结构调整
+
+- `IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assembling/termination_manager.py`
+  现在是积木 assembling 任务 termination 逻辑的实际实现位置，逻辑与 2.1 保持一致：
+  最大尝试次数、倒塌信号检测、`submit` 终止、`isaac_done` 终止都不变。
+- `VAGEN/vagen/envs/isaac/termination_manager.py`
+  现在只保留兼容层，继续兼容旧导入路径，但不再承载真实实现。
+- `VAGEN/vagen/envs/isaac/managed_env/`
+  新增拆分后的 Isaac managed env 模块目录，按配置、辅助方法、动作执行拆分代码。
+- `VAGEN/vagen/envs/isaac/isaac_managed_env.py`
+  现在是稳定入口文件，继续导出 `IsaacManagedEnv`，所以 `env_registry`、评测脚本和训练配置都不需要改。
+
+## 2.2 Reward / Termination / Env 说明
+
+- Reward 逻辑不变，仍然由 `VAGEN/vagen/envs/isaac/reward_manager.py` 负责。
+- Ground-truth 解析逻辑不变，仍然由 `VAGEN/vagen/envs/isaac/task_spec.py` 负责。
+- `IsaacManagedEnv` 的行为不变：
+  `reset()` 仍然按 seed 选择数据集快照并读取 ground truth，
+  `step()` 仍然支持 `query` / `place` / `submit`，
+  仍然返回相同结构的 `obs / reward / done / info`。
+
+## 2.2 推荐关注的文件
+
+- 入口环境：`VAGEN/vagen/envs/isaac/isaac_managed_env.py`
+- 环境主实现：`VAGEN/vagen/envs/isaac/managed_env/core.py`
+- 环境辅助逻辑：`VAGEN/vagen/envs/isaac/managed_env/helpers.py`
+- 环境动作执行：`VAGEN/vagen/envs/isaac/managed_env/actions.py`
+- assembling termination 实现：`IsaacLab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/assembling/termination_manager.py`
