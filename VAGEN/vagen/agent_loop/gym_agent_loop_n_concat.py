@@ -10,7 +10,21 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from PIL import Image
-from .agent_loop_no_concat import AgentLoopBase, AgentLoopOutput, register
+from .agent_loop_no_concat import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics, register
+
+# Verl's pipeline expects AgentLoopOutput with metrics as dict; use verl's type for return
+try:
+    from verl.experimental.agent_loop.agent_loop import AgentLoopOutput as VerlAgentLoopOutput
+except ImportError:
+    VerlAgentLoopOutput = None
+
+def _metrics_to_dict(m) -> Dict[str, Any]:
+    """Convert metrics to dict for verl compatibility (verl expects dict, not AgentLoopMetrics)."""
+    if isinstance(m, dict):
+        return m
+    if hasattr(m, "model_dump"):
+        return m.model_dump()
+    return dict(m) if m else {}
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
 from ..envs.gym_image_env import GymImageEnv
@@ -167,8 +181,8 @@ class GymAgentLoop(AgentLoopBase):
             env=env,
             response_limit=per_turn_response_limit,
             env_name=kwargs["env_name"],
-            group_idx=kwargs["group_idx"],
-            traj_idx=kwargs["traj_idx"],
+            group_idx=kwargs.get("group_idx", 0),
+            traj_idx=kwargs.get("traj_idx", 0),
         )
 
         # State machine: always GENERATE -> INTERACT, and decide termination inside INTERACT
@@ -186,7 +200,72 @@ class GymAgentLoop(AgentLoopBase):
 
         # Close env after loop
         await env.close()
-        return agent_data.outputs
+
+        # Verl's AgentLoopManager expects a single AgentLoopOutput, not a list.
+        # Merge multiple turn outputs into one (concat style) when needed.
+        outputs = agent_data.outputs
+        if len(outputs) == 0:
+            raise RuntimeError("gym_agent_loop_n_concat: no outputs produced")
+        if len(outputs) == 1:
+            o = outputs[0]
+            if VerlAgentLoopOutput is not None:
+                return VerlAgentLoopOutput(
+                    prompt_ids=o.prompt_ids,
+                    response_ids=o.response_ids,
+                    response_mask=o.response_mask,
+                    response_logprobs=o.response_logprobs,
+                    multi_modal_data=o.multi_modal_data,
+                    reward_score=o.reward_score,
+                    num_turns=getattr(o, "num_turns", 0),
+                    metrics=_metrics_to_dict(o.metrics),
+                    extra_fields=o.extra_fields or {},
+                )
+            return o
+        # Merge: prompt=first.prompt, response=resp_0 + resp_1 + ... (NO interleaving of prompt segments).
+        # Interleaving prompt_i (which contain image placeholders) into response causes Qwen2-VL to expand
+        # those placeholders, producing llm_positions shape mismatch vs attention_mask (log evidence: 4540 vs 4554).
+        merged_prompt_ids = outputs[0].prompt_ids
+        merged_response_ids: List[int] = []
+        merged_response_mask: List[int] = []
+        merged_response_logprobs: Optional[List[float]] = None
+        merged_images: List[Any] = []
+        for j, o in enumerate(outputs):
+            merged_response_ids.extend(o.response_ids)
+            merged_response_mask.extend(o.response_mask)
+            if o.response_logprobs is not None:
+                if merged_response_logprobs is None:
+                    merged_response_logprobs = []
+                merged_response_logprobs.extend(o.response_logprobs)
+            if o.multi_modal_data and "image" in o.multi_modal_data:
+                merged_images.extend(o.multi_modal_data["image"])
+        last = outputs[-1]
+        # Use first turn's images only - prompt is from first turn, response has no image placeholders
+        first_mm = outputs[0].multi_modal_data or {}
+        merged_mm = first_mm if first_mm else ({"image": merged_images} if merged_images else {})
+        out = AgentLoopOutput(
+            prompt_ids=merged_prompt_ids[-self.prompt_length:] if len(merged_prompt_ids) > self.prompt_length else merged_prompt_ids,
+            response_ids=merged_response_ids[: self.response_length],
+            response_mask=merged_response_mask[: self.response_length],
+            multi_modal_data=merged_mm,
+            response_logprobs=merged_response_logprobs[: self.response_length] if merged_response_logprobs else None,
+            reward_score=last.reward_score,
+            num_turns=sum(getattr(o, "num_turns", 1) for o in outputs),
+            metrics=last.metrics,
+            extra_fields=last.extra_fields or {},
+        )
+        if VerlAgentLoopOutput is not None:
+            return VerlAgentLoopOutput(
+                prompt_ids=out.prompt_ids,
+                response_ids=out.response_ids,
+                response_mask=out.response_mask,
+                response_logprobs=out.response_logprobs,
+                multi_modal_data=out.multi_modal_data,
+                reward_score=out.reward_score,
+                num_turns=out.num_turns,
+                metrics=_metrics_to_dict(out.metrics),
+                extra_fields=out.extra_fields or {},
+            )
+        return out
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: Dict[str, Any]) -> AgentState:
         """Encode windowed messages (sys + recent history + current user) into turn_prompt_ids."""

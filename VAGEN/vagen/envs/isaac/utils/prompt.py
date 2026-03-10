@@ -27,6 +27,16 @@ submit
 """
 
 
+<<<<<<< HEAD
+def init_observation_template(img_placeholders: str):
+    """Template for the initial observation shown after reset."""
+    return f"""\
+[System]: Environment Reset. All cubes are back to the pick position or hidden.
+Current views:
+{img_placeholders}
+Please provide the coordinate (x,y,z) for the first cube (z=0). Examples (must match format exactly):
+{{"x": INT, "y": INT, "z": INT}}
+=======
 def init_observation_template(img_placeholders: str, camera_labels: list = None):
     """Template for the initial observation shown after reset.
 
@@ -57,6 +67,9 @@ def action_template(action_result: str, img_placeholder: str):
     """
     return f"""\
 [System]: {action_result}
+<<<<<<< HEAD
+Updated views:
+=======
 Camera 0 view:
 {img_placeholder}
 Place the next cube or submit when done."""
@@ -90,33 +103,63 @@ Examples:
   Place a brick: {"x": 2, "y": 3, "z": 0}
   Submit:        submit"""
         return base_prompt + examples
+>>>>>>> main
 
     return base_prompt
 
 
 def _validate_system_prompt_text(text: str) -> bool:
+<<<<<<< HEAD
+    """Basic validation for the composed system+format prompt.
+
+    Checks presence of reasoning tag and an action envelope (<answer>)
+    with an example JSON coordinate. This is intentionally lightweight — it only
+    ensures the agent receives a clear machine-parseable example to avoid
+    format-errors that lead to invalid dialogues.
+    """
+
+    # require a JSON-like coordinate example somewhere
+    if "{\"x\"" not in text and "{\'x\'" not in text and '"x":' not in text:
+        return False
+
+    return True
+=======
     """Basic validation: prompt must contain a coordinate example."""
     return '"x":' in text or '"x"' in text
+>>>>>>> main
 
 
-def get_checked_system_prompt(
-    n_cameras: int = 3, add_example: bool = True
-) -> str:
+def get_checked_system_prompt(add_example: bool = True) -> str:
     """Return the normal system prompt + format if valid, otherwise return a
+<<<<<<< HEAD
+    concise corrective example that shows the exact expected reply format.
+
+    This helper is intended for Isaac-managed environments only: when the
+    composed system prompt looks malformed, returning the short corrective
+    example helps the agent produce a valid reply instead of entering a
+    non-parseable dialogue loop.
+=======
     concise corrective example.
+>>>>>>> main
     """
-    base = system_prompt(n_cameras=n_cameras)
-    fmt = format_prompt(n_cameras=n_cameras, add_example=add_example)
+    base = system_prompt()
+    fmt = format_prompt(add_example=add_example)
     composed = base + "\n" + fmt
 
     if _validate_system_prompt_text(composed):
         return composed
 
     corrective = (
+<<<<<<< HEAD
+        "System prompt validation failed. Please use the following exact reply format:{{\"x\": INT, \"y\": INT, \"z\": INT}}\n\n"
+        "Example:{{\"x\": 2, \"y\": 3, \"z\": 0}}\n"
+=======
         'System prompt validation failed. Please use one of the following formats:\n'
         'Place a brick: {"x": INT, "y": INT, "z": INT}\n'
         'Submit: submit\n'
+>>>>>>> main
     )
+
     return corrective
 
 
