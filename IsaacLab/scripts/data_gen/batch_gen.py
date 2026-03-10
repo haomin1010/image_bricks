@@ -15,7 +15,8 @@ from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Snapshot a table with grid.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments.")
-parser.add_argument("--json_file", type=str, default="convex_01.json", help="Name of the JSON file to process")
+parser.add_argument("--type", type=str, choices=["small", "small_size4", "large"], default="small", help="Category: small, small_size4 or large")
+parser.add_argument("--json_file", type=str, default="00001.json", help="Name of the JSON file to process")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -46,12 +47,13 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 # =============================================================================
 
 # 指定 JSON 文件的路径
-JSON_FOLDER = "convex_json_batch"
+DATASET_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../assets/dataset"))
+JSON_FOLDER = os.path.join(DATASET_DIR, "ground_truth", args_cli.type)
 JSON_FILENAME = args_cli.json_file
 JSON_PATH = os.path.join(JSON_FOLDER, JSON_FILENAME)
 
 # 提取文件名（不含扩展名），用于命名输出文件夹和图片
-FILE_ID = os.path.splitext(JSON_FILENAME)[0]  # e.g., "convex_01"
+FILE_ID = os.path.splitext(JSON_FILENAME)[0]  # e.g., "00001"
 
 # =============================================================================
 # 1. 定义常量 (Constants)
@@ -415,8 +417,8 @@ def main():
     }
 
     # 设置输出目录
-    base_output_dir = "output_snapshots"
-    # 使用 JSON 文件名作为子目录名 (e.g. "output_snapshots/convex_01")
+    base_output_dir = os.path.join(DATASET_DIR, "output_snapshots", args_cli.type)
+    # 使用 JSON 文件名作为子目录名 (e.g. "output_snapshots/small/00001")
     shape_output_dir = os.path.join(base_output_dir, FILE_ID)
     os.makedirs(shape_output_dir, exist_ok=True)
     
@@ -430,7 +432,7 @@ def main():
         if rgb_data.shape[-1] == 4:
             rgb_data = rgb_data[..., :3]
             
-        # 格式化文件名: {FILE_ID}_{VIEW}.png -> e.g., convex_01_top.png
+        # 格式化文件名: {FILE_ID}_{VIEW}.png -> e.g., 00001_top.png
         filename = f"{FILE_ID}_{view_name}.png"
         filepath = os.path.join(shape_output_dir, filename)
         

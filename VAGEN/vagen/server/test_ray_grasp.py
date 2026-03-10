@@ -21,7 +21,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import signal
+import socket
 import shutil
 import subprocess
 import sys
@@ -33,10 +35,14 @@ import ray
 from ray.exceptions import GetTimeoutError
 
 
-DEFAULT_TASK = "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0"
-DEFAULT_GOALS = "2,2,0;3,2,0;3,3,0"
+DEFAULT_TASK = "multipicture_franka_stack_from_begin"
+DEFAULT_GOALS = "2,2,0"
 DEFAULT_CAMERAS = "0,1,2,3,4"
 DEFAULT_RAY_HEAD_LOG = "outputs/ray_test.log"
+HARDCODED_SERVER_VIDEO_LENGTH = 0
+HARDCODED_SERVER_VIDEO_INTERVAL = 0
+FORCE_ONE_CLICK_KEEP_RAY = True
+FORCE_ONE_CLICK_KILL_EXISTING_SERVER = True
 
 
 def parse_goals(raw: str) -> List[Dict[str, int]]:
@@ -80,6 +86,23 @@ def parse_bool(text: str) -> bool:
     raise ValueError(f"Cannot parse boolean value from '{text}'")
 
 
+def enforce_hardcoded_flags(args: argparse.Namespace) -> None:
+    """Force selected one-click flags to fixed values regardless of CLI input."""
+    if bool(args.one_click_keep_ray) != FORCE_ONE_CLICK_KEEP_RAY:
+        print(
+            "[INFO] Ignoring --one-click-keep-ray CLI value; "
+            f"hardcoded to {str(FORCE_ONE_CLICK_KEEP_RAY).lower()}."
+        )
+    args.one_click_keep_ray = FORCE_ONE_CLICK_KEEP_RAY
+
+    if bool(args.one_click_kill_existing_server) != FORCE_ONE_CLICK_KILL_EXISTING_SERVER:
+        print(
+            "[INFO] Ignoring --one-click-kill-existing-server CLI value; "
+            f"hardcoded to {str(FORCE_ONE_CLICK_KILL_EXISTING_SERVER).lower()}."
+        )
+    args.one_click_kill_existing_server = FORCE_ONE_CLICK_KILL_EXISTING_SERVER
+
+
 def tail_text(path: str, max_lines: int = 80) -> str:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -102,9 +125,57 @@ def expect_keys(payload: Dict[str, Any], keys: Sequence[str], label: str) -> Non
         raise AssertionError(f"{label} missing keys: {missing}; payload keys={list(payload.keys())}")
 
 
+def _read_auto_ray_address() -> Optional[str]:
+    env_addr = os.environ.get("RAY_ADDRESS", "").strip()
+    if env_addr:
+        return env_addr
+
+    current_cluster = Path("/tmp/ray/ray_current_cluster")
+    if current_cluster.exists():
+        try:
+            text = current_cluster.read_text(encoding="utf-8", errors="replace").strip()
+            if text:
+                return text
+        except Exception:
+            return None
+    return None
+
+
+def _ray_address_is_reachable(address: str, timeout_s: float = 1.0) -> bool:
+    host = ""
+    port_text = ""
+    if "://" in address:
+        address = address.split("://", 1)[1]
+    if ":" in address:
+        host, port_text = address.rsplit(":", 1)
+    if not host or not port_text.isdigit():
+        return False
+    port = int(port_text)
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
+
+
 def ensure_ray_initialized(address: str, namespace: str, local_fallback: bool) -> None:
     if ray.is_initialized():
         return
+
+    if address.strip().lower() in {"", "local"}:
+        ray.init(address="local", namespace=namespace, ignore_reinit_error=True)
+        print(f"[INFO] Local Ray initialized: namespace={namespace}")
+        return
+
+    if address == "auto" and local_fallback:
+        auto_addr = _read_auto_ray_address()
+        if auto_addr and not _ray_address_is_reachable(auto_addr):
+            print(f"[WARN] Ray auto address seems unreachable: {auto_addr}")
+            print("[INFO] Skip ray.init(address='auto'); initialize local Ray directly.")
+            ray.init(address="local", namespace=namespace, ignore_reinit_error=True)
+            print(f"[INFO] Local Ray initialized: namespace={namespace}")
+            return
 
     try:
         ray.init(address=address, namespace=namespace, ignore_reinit_error=True)
@@ -115,7 +186,7 @@ def ensure_ray_initialized(address: str, namespace: str, local_fallback: bool) -
             raise
         print(f"[WARN] ray.init(address='auto') failed: {exc}")
         print("[INFO] Falling back to local Ray runtime.")
-        ray.init(namespace=namespace, ignore_reinit_error=True)
+        ray.init(address="local", namespace=namespace, ignore_reinit_error=True)
         print(f"[INFO] Local Ray initialized: namespace={namespace}")
 
 
@@ -182,8 +253,57 @@ def wait_for_actor(actor_name: str, timeout_s: float, poll_s: float = 1.0) -> An
             time.sleep(poll_s)
 
 
+def wait_for_actor_absent(actor_name: str, timeout_s: float, poll_s: float = 0.5) -> bool:
+    start = time.time()
+    while True:
+        try:
+            ray.get_actor(actor_name)
+        except ValueError:
+            return True
+
+        elapsed = time.time() - start
+        if elapsed >= timeout_s:
+            return False
+        time.sleep(poll_s)
+
+
+def recycle_existing_server_if_requested(args: argparse.Namespace) -> None:
+    """Best-effort cleanup for stale detached actors before auto-start."""
+    if not (args.auto_start and args.one_click_kill_existing_server):
+        return
+
+    actor_name = args.actor_name
+    actor = None
+    try:
+        actor = ray.get_actor(actor_name)
+    except ValueError:
+        actor = None
+
+    if actor is not None:
+        print(
+            f"[INFO] Existing actor '{actor_name}' found and "
+            "--one-click-kill-existing-server=true; recycling before test."
+        )
+        try:
+            ray.kill(actor, no_restart=True)
+            if wait_for_actor_absent(actor_name, timeout_s=15.0, poll_s=0.5):
+                print(f"[INFO] Actor '{actor_name}' stopped.")
+            else:
+                print(
+                    f"[WARN] Actor '{actor_name}' still visible after kill attempt; "
+                    "continuing with current actor state."
+                )
+        except Exception as exc:
+            print(f"[WARN] Failed to kill actor '{actor_name}': {exc}")
+
+    # Also clean up possible orphan server process wrappers.
+    kill_existing_server_process()
+
+
 def start_server_if_needed(args: argparse.Namespace) -> Tuple[Optional[subprocess.Popen], Any]:
     actor_name = args.actor_name
+    recycle_existing_server_if_requested(args)
+
     try:
         actor = ray.get_actor(actor_name)
         print(f"[INFO] Found existing actor '{actor_name}'.")
@@ -220,14 +340,22 @@ def start_server_if_needed(args: argparse.Namespace) -> Tuple[Optional[subproces
         cmd.append("--no-headless")
     if args.server_record:
         cmd.append("--record")
-        cmd.extend(["--video-length", str(args.server_video_length)])
-        cmd.extend(["--video-interval", str(args.server_video_interval)])
+        cmd.extend(["--video-length", str(HARDCODED_SERVER_VIDEO_LENGTH)])
+        cmd.extend(["--video-interval", str(HARDCODED_SERVER_VIDEO_INTERVAL)])
     if args.server_extra_args.strip():
         cmd.extend(shlex.split(args.server_extra_args))
 
     env = os.environ.copy()
+    # Ensure auto-started server joins the same cluster as this test process.
+    try:
+        gcs_address = getattr(ray.get_runtime_context(), "gcs_address", None)
+        if isinstance(gcs_address, str) and gcs_address.strip():
+            env["RAY_ADDRESS"] = gcs_address.strip()
+    except Exception:
+        pass
     if args.server_cuda_visible_devices:
         env["CUDA_VISIBLE_DEVICES"] = args.server_cuda_visible_devices
+    env.setdefault("PYTHONUNBUFFERED", "1")
 
     print(f"[INFO] Starting server process: {' '.join(cmd)}")
     print(f"[INFO] Server log: {log_path}")
@@ -365,6 +493,9 @@ def run_grasp_test(actor: Any, args: argparse.Namespace) -> Dict[str, Any]:
             reset_paths = dump_payload_images(reset_resp, image_output_dir, stage="reset")
             summary["reset_image_paths"] = reset_paths
             print(f"[INFO] Saved reset images: {len(reset_paths)} -> {image_output_dir}")
+        if args.post_reset_delay_s > 0:
+            print(f"[INFO] Waiting {args.post_reset_delay_s:.1f}s after reset before sending first action...")
+            time.sleep(float(args.post_reset_delay_s))
 
         for idx, goal in enumerate(goals):
             method_name = "remote_step"
@@ -460,13 +591,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--one-click-keep-ray",
         type=parse_bool,
         default=False,
-        help="Keep Ray cluster running after one-click mode exits. true/false.",
+        help="Deprecated (ignored). Hardcoded to true.",
     )
     parser.add_argument(
         "--one-click-kill-existing-server",
         type=parse_bool,
         default=True,
-        help="Kill lingering start_isaac_server.py before one-click start. true/false.",
+        help=(
+            "Deprecated (ignored). Hardcoded to true; recycles stale actor/process in auto-start."
+        ),
     )
     parser.add_argument(
         "--ray-head-log",
@@ -486,6 +619,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--seed", type=int, default=0, help="Seed used for remote_reset.")
+    parser.add_argument(
+        "--post-reset-delay-s",
+        type=float,
+        default=10.0,
+        help="Delay in seconds after remote_reset before sending first action.",
+    )
     parser.add_argument(
         "--goals",
         type=str,
@@ -546,13 +685,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--server-video-length",
         type=int,
         default=0,
-        help="Forwarded to server --video-length when --server-record is true (0 = until close/reset).",
+        help=(
+            "Deprecated (ignored). Video length is hardcoded to 0 when --server-record is true."
+        ),
     )
     parser.add_argument(
         "--server-video-interval",
         type=int,
         default=0,
-        help="Forwarded to server --video-interval when --server-record is true (0 = single clip).",
+        help=(
+            "Deprecated (ignored). Video interval is hardcoded to 0 when --server-record is true."
+        ),
     )
     parser.add_argument(
         "--server-cuda-visible-devices",
@@ -593,6 +736,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    enforce_hardcoded_flags(args)
     ray_head_started = False
 
     try:
