@@ -70,6 +70,7 @@ vagen__first_arg_is_config_path() {
 
 vagen_eval_init_defaults() {
   export IMAGE_BRICKS_ROOT="${IMAGE_BRICKS_ROOT:-"$(vagen__repo_root_from_this_file)"}"
+  local user_set_isaac_server_num_envs="${ISAAC_SERVER_NUM_ENVS:-}"
 
   # ---- Common logging ----
   vagen__export_default VERL_LOGGING_LEVEL "INFO"
@@ -82,7 +83,7 @@ vagen_eval_init_defaults() {
   vagen__export_default ISAAC_HEADLESS "0" # default to headed mode
 
   # ---- Isaac server argv (consumed by Python: vagen.evaluate.run_eval) ----
-  vagen__export_default ISAAC_SERVER_NUM_ENVS "1"
+  vagen__export_default ISAAC_SERVER_NUM_ENVS "2" # keep aligned with eval concurrency by default
   vagen__export_default ISAAC_SERVER_TASK "multipicture_teleport_stack_from_begin"
   vagen__export_default VAGEN_MAX_CUBES "16"
   vagen__export_default ISAAC_SERVER_RECORD "0"
@@ -105,7 +106,14 @@ vagen_eval_init_defaults() {
   vagen__export_default QWEN_BASE_URL "https://dashscope.aliyuncs.com/compatible-mode/v1"
   # openrouter uses the OpenAI-compatible client but needs base_url override in config.
   vagen__export_default OPENROUTER_BASE_URL "https://openrouter.ai/api/v1"
-  vagen__export_default OPENROUTER_MODEL_ID "qwen/qwen3.5-flash-02-23"
+  vagen__export_default OPENROUTER_MODEL_ID "openai/gpt-4o-mini"
+  # Eval/API concurrency controls (consumed as OmegaConf overrides in template helpers).
+  vagen__export_default VAGEN_EVAL_MAX_CONCURRENT_JOBS "2"
+  vagen__export_default VAGEN_OPENAI_MAX_CONCURRENCY "8"
+  # Keep Isaac server env slots aligned with eval concurrency unless explicitly set.
+  if [[ -z "${user_set_isaac_server_num_envs}" ]]; then
+    export ISAAC_SERVER_NUM_ENVS="${VAGEN_EVAL_MAX_CONCURRENT_JOBS}"
+  fi
 
   # Back-compat for older script var names.
   if [[ -z "${OPENROUTER_MODEL_ID:-}" && -n "${MODEL_ID:-}" ]]; then
@@ -144,6 +152,8 @@ vagen_eval_build_default_overrides() {
         "run.backend=openai" \
         "backends.openai.base_url=${OPENROUTER_BASE_URL}" \
         "backends.openai.model=${OPENROUTER_MODEL_ID}" \
+        "run.max_concurrent_jobs=${VAGEN_EVAL_MAX_CONCURRENT_JOBS}" \
+        "backends.openai.max_concurrency=${VAGEN_OPENAI_MAX_CONCURRENCY}" \
         "fileroot=${VAGEN_FILEROOT}"
       ;;
     *)

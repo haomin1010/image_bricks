@@ -292,6 +292,7 @@ bash scripts/eval_isaac.sh run.max_concurrent_jobs=2 experiment.dump_dir=./rollo
 
 ```bash
 bash scripts/eval_isaac.sh
+bash scripts/eval_isaac_partial.sh
 ```
 
 也可以继续使用旧入口或直接传入同样的 OmegaConf overrides；配置文件读取方式没有变化，仍然通过 `scripts/*.sh` 和现有 YAML / 环境变量完成。

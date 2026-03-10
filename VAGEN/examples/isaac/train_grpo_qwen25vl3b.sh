@@ -32,15 +32,15 @@ export VERL_CONFIG_PATH="${PROJECT_ROOT}/verl/verl/trainer/config"
 
 
 
-PROJECT_NAME="image_to_bricks"
-EXPERIMENT_NAME="brick_isaac_grpo_qwen25vl3b_1gpu"
+PROJECT_NAME="${PROJECT_NAME:-image_to_bricks}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-brick_isaac_grpo_qwen25vl3b_1gpu}"
 
 BASEDIR=$(pwd)
 SCRIPTDIR=${SCRIPT_DIR}
 EXPERIMENT_DIR=${BASEDIR}/exps/${PROJECT_NAME}/${EXPERIMENT_NAME}
 SAVE_CHECKPOINT_DIR=${EXPERIMENT_DIR}/verl_checkpoints
-DATASET_TRAIN=${SCRIPTDIR}/train_isaac_full_view_vision.yaml
-DATASET_VAL=${SCRIPTDIR}/val_isaac_vision.yaml
+DATASET_TRAIN="${DATASET_TRAIN:-${SCRIPTDIR}/train_isaac_full_view_vision.yaml}"
+DATASET_VAL="${DATASET_VAL:-${SCRIPTDIR}/val_isaac_vision.yaml}"
 agent_loop_config_path=${BASEDIR}/vagen/configs/agent_n_concat.yaml
 REF_MODEL_PATH=/data1/lhm/image_bricks/Models/Qwen2.5-VL-3B-Instruct
 mkdir -p ${EXPERIMENT_DIR}

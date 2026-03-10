@@ -7,7 +7,7 @@ envs:
     response_length_per_turn: 256 # max response tokens per turn (JSON coord is short)
     config:                       # env-specific config → BrickIsaacEnvConfig
       backend: isaac              # "mock" for testing, "isaac" for real simulator
-      n_views: 3                  # number of camera views (top/front/side)
+      n_views: 5                  # number of camera views (top/front/side)
       image_size: [256, 256]
       grid_size: 8                # mock grid dimension
       max_steps: 200              # hard step limit inside env

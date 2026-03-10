@@ -52,7 +52,6 @@ class IsaacEnvServerProxy:
             raise RuntimeError(f"All {self.num_envs} environment slots are allocated.")
         env_id = self.free_ids.pop(0)
         self.allocated_ids.add(env_id)
-        print(f"Allocated environment slot {env_id} ({len(self.allocated_ids)}/{self.num_envs} used)")
         return env_id
     
     def release_env_id(self, env_id):
@@ -63,7 +62,6 @@ class IsaacEnvServerProxy:
             self.free_ids.sort() # Keep IDs ordered
             if env_id in self.latest_images:
                 del self.latest_images[env_id]
-            print(f"Released environment slot {env_id}")
 
     # --- Methods for Main Thread to push/pull data ---
     def update_state(self, env_id, images):
@@ -79,7 +77,6 @@ class IsaacEnvServerProxy:
     # --- Methods for Trainer (Gym Remote Env) ---
     async def remote_reset(self, env_id, reset_payload):
         """Reset a specific environment slot."""
-        print(f"Trainer requested reset for slot {env_id} payload={reset_payload}")
         self.commands.append((env_id, "reset", reset_payload))
         # Wait for the simulation loop to perform the reset and publish new images.
         # Poll for up to ~5 seconds; this provides a soft sync so trainers see the post-reset state.

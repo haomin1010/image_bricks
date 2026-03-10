@@ -397,7 +397,8 @@ def main() -> None:
     need_isaac_server = False
     env_specs = _parse_env_specs(cfg)
     for spec in env_specs:
-        if spec.name == "BrickIsaac" and spec.config.get("backend") == "isaac":
+        backend_name = str((spec.config or {}).get("backend", "")).strip().lower()
+        if backend_name == "isaac":
             need_isaac_server = True
             break
     

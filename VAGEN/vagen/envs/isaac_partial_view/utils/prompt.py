@@ -1,130 +1,101 @@
 """
-Prompt templates for the BrickIsaac environment.
+Prompt templates for the BrickIsaac partial-view environment.
 
-The LLM can perform two types of actions each turn:
-  1. **Query** – request camera views by ID to inspect the scene.
-  2. **Place** – output a coordinate to place the next brick.
-
-After a *place* action the environment returns camera-0's view.
-After a *query* action the environment returns the requested camera views.
+The model can query one camera per turn, place one brick, or submit.
 """
 
 
-def system_prompt(n_cameras: int = 3):
-    """Return the system prompt describing the cube stacking task.
-
-    Args:
-        n_cameras: Total number of available cameras (IDs 0 .. n_cameras-1).
-    """
+def system_prompt(n_cameras: int = 5) -> str:
+    """Return the system prompt describing the cube stacking task."""
     return f"""\
-You are a robot arm controller. You observe camera views of a 6x6 tabletop grid (coordinates x,y in {{0..5}}). Your goal is to build a target shape by placing one cube at a time.
+You are a robot arm controller. Your goal is to build a target block structure on a 6x6 tabletop grid.
 
-You have {n_cameras} cameras available (IDs 0 to {n_cameras - 1}).
+At reset you first see all {n_cameras} target camera views (IDs 0..{n_cameras - 1}).
+After reset, each query action can request exactly one camera view.
+There are {n_cameras} cameras with IDs 0..{n_cameras - 1}.
 
-Each turn you must output exactly ONE of the following actions:
+Grid coordinates: x, y in {{0..5}}, z is the vertical layer (0 = bottom, 1 = one above, etc.).
 
-1) Query camera views:
-{{"query": [CAM_ID, ...]}}
-- CAM_ID must be integers in {{0..{n_cameras - 1}}}.
-- You may request one or more cameras in a single query.
-- The environment will return the requested camera images.
+Each turn output exactly ONE of:
+
+1) Query one camera:
+{{"query": [INT]}}
 
 2) Place a cube:
 {{"x": INT, "y": INT, "z": INT}}
-- x, y are grid coordinates in {{0..5}}.
-- z is the layer (0 = base, 1 = above, etc.).
-- The environment will return camera 0's view after placement.
 
-3) When you believe the task is complete:
+3) When the structure is complete:
 submit
 """
 
 
-def init_observation_template(img_placeholder: str):
-    """Template for the initial observation shown after reset.
+def init_observation_template(img_placeholders: str, camera_labels: list | None = None) -> str:
+    """Template for the initial observation shown after reset."""
+    if camera_labels:
+        lines = []
+        for label, ph in zip(camera_labels, img_placeholders.split("\n")):
+            lines.append(f"{label}: {ph}")
+        camera_block = "\n".join(lines)
+    else:
+        camera_block = img_placeholders
 
-    Args:
-        img_placeholder: A single ``<image>`` placeholder for camera 0.
-    """
     return f"""\
-[System]: Environment Reset. All cubes are back to the pick position or hidden.
-Camera 0 view:
-{img_placeholder}
-You may query other camera views or place the first cube.
+[System]: Environment Reset. Study the target carefully.
+Target multi-view images:
+{camera_block}
+Now query one camera per turn if needed, place the first cube, or submit if complete.
 """
 
 
-def action_template(action_result: str, img_placeholder: str):
-    """Template for the observation returned after a place action.
-
-    Args:
-        action_result: Textual feedback from the environment.
-        img_placeholder: A single ``<image>`` placeholder for camera 0.
-    """
+def action_template(action_result: str, img_placeholder: str) -> str:
+    """Template for the observation returned after a placement/parse branch."""
     return f"""\
 [System]: {action_result}
 Camera 0 view:
 {img_placeholder}
-You may query camera views or place the next cube."""
+You may query camera views, place the next cube, or submit.
+"""
 
 
-def query_result_template(camera_ids: list, img_placeholders: str):
-    """Template for the observation returned after a query action.
-
-    Args:
-        camera_ids: List of camera IDs that were queried.
-        img_placeholders: ``<image>`` placeholders (one per queried camera),
-            separated by newlines.
-    """
-    cam_label = ", ".join(str(c) for c in camera_ids)
+def query_result_template(camera_id: int, img_placeholder: str) -> str:
+    """Template for observations returned after query actions."""
     return f"""\
-[System]: Query result for camera(s) {cam_label}:
-{img_placeholders}
-You may query more cameras, place a cube, or submit."""
+[System]: Query result for camera {camera_id}.
+{img_placeholder}
+You may query one camera, place a cube, or submit.
+"""
 
 
-def format_prompt(n_cameras: int = 3, add_example: bool = True):
-    """Generate the output-format instructions appended to the system prompt.
-
-    Args:
-        n_cameras: Total number of available cameras.
-        add_example: Whether to append concrete examples.
-    """
+def format_prompt(n_cameras: int = 5, add_example: bool = True) -> str:
+    """Generate output-format instructions appended to the system prompt."""
     base_prompt = f"""\
-Each turn you must output exactly one action.
-To query cameras: {{"query": [CAM_ID, ...]}}  (IDs in 0..{n_cameras - 1})
+Each turn output exactly one action.
+To query one camera: {{"query": [INT]}} (ID in 0..{n_cameras - 1})
 To place a brick: {{"x": INT, "y": INT, "z": INT}}
-When all bricks are placed correctly: submit"""
+When all bricks are placed correctly: submit
+"""
 
     if add_example:
-        examples = f"""
-
+        examples = """
 Examples:
-  Query cameras 0 and 2: {{"query": [0, 2]}}
-  Place a brick:         {{"x": 2, "y": 3, "z": 0}}
-  Submit:                submit"""
-        return base_prompt + examples
+  Query camera: {"query": [2]}
+  Place a brick: {"x": 2, "y": 3, "z": 0}
+  Submit: submit
+"""
+        return base_prompt + "\n" + examples
 
     return base_prompt
 
 
 def _validate_system_prompt_text(text: str) -> bool:
-    """Basic validation for the composed system+format prompt.
-
-    Checks that the prompt contains both a coordinate example and a query
-    example so the agent knows both action formats.
-    """
+    """Basic validation for both coordinate and query examples."""
     has_coord = '"x":' in text or '"x"' in text
     has_query = '"query"' in text
     return has_coord and has_query
 
 
-def get_checked_system_prompt(
-    n_cameras: int = 3, add_example: bool = True
-) -> str:
-    """Return the normal system prompt + format if valid, otherwise return a
-    concise corrective example that shows the exact expected reply format.
-    """
+def get_checked_system_prompt(n_cameras: int = 5, add_example: bool = True) -> str:
+    """Return normal system prompt + format, otherwise a concise fallback."""
     base = system_prompt(n_cameras=n_cameras)
     fmt = format_prompt(n_cameras=n_cameras, add_example=add_example)
     composed = base + "\n" + fmt
@@ -132,11 +103,31 @@ def get_checked_system_prompt(
     if _validate_system_prompt_text(composed):
         return composed
 
-    # Fallback corrective example (minimal, explicit and machine-parseable)
     corrective = (
-        'System prompt validation failed. Please use one of the following formats:\n'
-        f'Query cameras: {{"query": [0, 1]}}  (IDs 0..{n_cameras - 1})\n'
+        "System prompt validation failed. Please use one of the following formats:\n"
+        f'Query one camera: {{"query": [0]}} (ID 0..{n_cameras - 1})\n'
         'Place a brick: {"x": INT, "y": INT, "z": INT}\n'
-        'Submit: submit\n'
+        "Submit: submit\n"
     )
     return corrective
+
+
+def target_description(task_spec, max_attempts: int) -> str:
+    """Build a concise target description from task metadata."""
+    if int(getattr(task_spec, "total_blocks", 0)) <= 0:
+        return (
+            "Replicate the target block structure shown in the image. "
+            "Place blocks one by one to match the target."
+        )
+
+    dims = tuple(getattr(task_spec, "dimensions", (0, 0, 0)))
+    length = int(dims[0]) if len(dims) > 0 else 0
+    width = int(dims[1]) if len(dims) > 1 else 0
+    height = int(dims[2]) if len(dims) > 2 else 0
+    total_blocks = int(getattr(task_spec, "total_blocks", 0))
+    return (
+        "Replicate the target structure shown in the images. "
+        f"The target has {total_blocks} blocks in a {length}x{width}x{height} grid. "
+        f"You may make at most {int(max_attempts)} placement attempts. "
+        "Supported candidate placements are rewarded; floating or non-candidate placements are penalized."
+    )

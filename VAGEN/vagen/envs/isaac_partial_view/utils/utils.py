@@ -3,12 +3,11 @@ Parsing utilities for the BrickIsaac environment.
 Extracts an action from an LLM response.  Supported action types:
 
 1. **Place brick**  – ``{"x": INT, "y": INT, "z": INT}``
-2. **Query cameras** – ``{"query": [INT, ...]}``
+2. **Query camera** – ``{"query": [INT]}``
 3. **Submit**        – ``submit`` or ``{"action": "submit"}``
 """
 
 import json
-import re
 from typing import Dict, List, Optional
 
 
@@ -113,10 +112,10 @@ def _try_parse_xyz(text: str) -> Optional[Dict[str, int]]:
 
 
 def _extract_query(text: str) -> Optional[List[int]]:
-    """Parse a strict ``{"query": [INT, ...]}`` JSON object.
+    """Parse a strict ``{"query": [INT]}`` JSON object.
 
-    Returns a list of camera IDs if valid, otherwise ``None``.
-    The list must be non-empty and contain only non-negative integers.
+    Returns a single-item camera-ID list if valid, otherwise ``None``.
+    The list must contain exactly one non-negative integer.
     """
     try:
         obj = json.loads(text)
@@ -130,15 +129,15 @@ def _extract_query(text: str) -> Optional[List[int]]:
         return None
 
     cam_list = obj["query"]
-    if not isinstance(cam_list, list) or len(cam_list) == 0:
+    if not isinstance(cam_list, list) or len(cam_list) != 1:
         return None
 
     try:
-        ids = [int(c) for c in cam_list]
+        cam_id = int(cam_list[0])
     except (ValueError, TypeError):
         return None
 
-    if any(i < 0 for i in ids):
+    if cam_id < 0:
         return None
 
-    return ids
+    return [cam_id]

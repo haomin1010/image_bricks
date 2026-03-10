@@ -162,6 +162,7 @@ class GenericVisionInferenceWorkflow:
         metadata = dict(episode_metadata or {})
         turn_limit = int(max_turns)
         assert turn_limit > 0, f"Invalid max_turns={turn_limit} in workflow"
+        counted_turns = 0
 
         try:
             # Reset and obtain system/user initial messages
@@ -179,7 +180,7 @@ class GenericVisionInferenceWorkflow:
             messages.append(self.adapter.format_user_turn(user_text, user_imgs))
             user_imgs_per_turn.append(user_imgs)
 
-            for t in range(turn_limit):
+            while True:
                 # Safeguard completion
                 try:
                     reply = await self.adapter.acompletion(messages, **self.chat_config)
@@ -224,6 +225,17 @@ class GenericVisionInferenceWorkflow:
                 cumulative_reward += float(r)
                 infos.append(step_info or {})
 
+                # Count turns by placement actions for Isaac-style envs:
+                # if step_info contains action-parsing keys, only coordinate placements
+                # consume one turn. Query/submit/invalid actions do not.
+                count_this_turn = True
+                if isinstance(step_info, dict):
+                    has_isaac_action_keys = ("coordinate" in step_info) or ("query_cameras" in step_info)
+                    if has_isaac_action_keys:
+                        count_this_turn = step_info.get("coordinate") is not None
+                if count_this_turn:
+                    counted_turns += 1
+
                 user_text = next_obs.get("obs_str", "")
                 user_imgs = extract_images(next_obs)
                 messages.append(self.adapter.format_user_turn(user_text, user_imgs))
@@ -233,7 +245,7 @@ class GenericVisionInferenceWorkflow:
                     terminated = True
                     finish_reason = "done"
                     break
-                if t + 1 >= turn_limit:
+                if counted_turns >= turn_limit:
                     finish_reason = "max_turns"
                     break
 

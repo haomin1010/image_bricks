@@ -1,15 +1,15 @@
 fileroot: "/mnt/data/image_bricks/VAGEN"
 
 envs:
-  - name: BrickIsaacFullView  # 必须与 env_registry.yaml 中的 key 完全一致
+  - name: BrickIsaacPartialView  # 必须与 env_registry.yaml 中的 key 完全一致
     n_envs: 1
-    tag_id: isaac_real_test
+    tag_id: isaac_real_test_partial
     seed: [1001]
     max_turns: 15
     config:
       backend: isaac  # 关键：告诉 IsaacManagedEnv 使用真实的 Ray Actor
       dataset_root: ${fileroot}/assets/dataset/output_snapshots/test
-      n_views: 3
+      n_views: 5
       image_size: [224, 224]
       format_reward: ${oc.env:VAGEN_ISAAC_FORMAT_REWARD,0.1}
       correct_placement_reward: ${oc.env:VAGEN_ISAAC_CORRECT_PLACEMENT_REWARD,1.0}
@@ -37,3 +37,4 @@ backends:
     base_url: "http://127.0.0.1:30000/v1"
     model: "Qwen/Qwen2.5-VL-3B-Instruct"
     max_concurrency: 1
+

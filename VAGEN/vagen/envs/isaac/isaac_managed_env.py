@@ -1,25 +1,10 @@
-from .managed_env.core import IsaacManagedEnv
+"""
+Isaac managed environment for BrickIsaac.
 
-This environment supports two action types from the VLM:
-
-1. **Query** – ``{"query": [cam_id, ...]}``
-   Returns images from the requested cameras.  No physics step.
-2. **Place** – ``{"x": INT, "y": INT, "z": INT}``
-   Places a brick and returns camera-0's image.
-3. **Submit** – ``submit``
-   Ends the episode.
-
-Usage
------
-Register this class in the env_registry config::
-
-    env_registry:
-      brick_isaac: vagen.envs.brick_isaac.IsaacManagedEnv
-
-The ``env_config`` dict in the dataset YAML should contain at least:
-
-- ``num_total_envs`` (int): Total sub-envs in the Isaac DirectVectorEnv.
-- ``n_cameras`` (int): Number of cameras available (IDs 0 .. n_cameras-1).
+This environment supports three action types from the VLM:
+1. Query: {"query": [cam_id, ...]}
+2. Place: {"x": INT, "y": INT, "z": INT}
+3. Submit: submit
 """
 
 from __future__ import annotations
