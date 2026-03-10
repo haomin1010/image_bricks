@@ -1,5 +1,4 @@
-"""
-Isaac Managed Environment — GymImageEnv proxy backed by the EnvManager system.
+from .managed_env.core import IsaacManagedEnv
 
 This environment supports two action types from the VLM:
 
