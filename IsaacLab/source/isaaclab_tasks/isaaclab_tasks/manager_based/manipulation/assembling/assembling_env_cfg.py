@@ -7,36 +7,28 @@ import os
 from pathlib import Path
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
+from isaaclab.assets import AssetBaseCfg
 from isaaclab.devices.openxr import XrCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.envs.mdp.actions.actions_cfg import DifferentialInverseKinematicsActionCfg
-from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import FrameTransformerCfg
-from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from isaaclab_tasks.manager_based.manipulation.stack.mdp import franka_stack_events
-from isaaclab.markers.config import FRAME_MARKER_CFG
 
-from .cfg_override import (
-    ASSEMBLING_MAX_CUBES,
-    DEFAULT_GRID_CELL_SIZE,
-    DEFAULT_GRID_LINE_THICKNESS,
-    DEFAULT_GRID_ORIGIN,
-    DEFAULT_GRID_SIZE,
-    FRANKA_ARM_JOINT_NAMES,
-    FRANKA_ARM_ONLY_CFG,
-    AssemblingCfgOverride,
-)
 from . import mdp
+
+
+ASSEMBLING_MAX_CUBES = int(getattr(mdp, "DEFAULT_MAX_CUBES", 8))
+DEFAULT_GRID_ORIGIN: tuple[float, float, float] = (0.5, 0.0, 0.001)
+DEFAULT_GRID_SIZE = 8
+DEFAULT_GRID_LINE_THICKNESS = 0.001
+DEFAULT_GRID_CELL_SIZE = 0.055 + DEFAULT_GRID_LINE_THICKNESS
+DEFAULT_CUBE_SIZE = 0.0203 * 2.0
+
 
 def _env_flag(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -45,39 +37,10 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "off", "no"}
 
 
-def _build_default_ee_frame_cfg() -> FrameTransformerCfg:
-    marker_cfg = FRAME_MARKER_CFG.copy()
-    marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
-    marker_cfg.prim_path = "/Visuals/FrameTransformer"
-    return FrameTransformerCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/panda_link0",
-        debug_vis=False,
-        visualizer_cfg=marker_cfg,
-        target_frames=[
-            FrameTransformerCfg.FrameCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/panda_hand",
-                name="end_effector",
-                offset=OffsetCfg(pos=[0.0, 0.0, 0.1034]),
-            ),
-            FrameTransformerCfg.FrameCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/panda_rightfinger",
-                name="tool_rightfinger",
-                offset=OffsetCfg(pos=(0.0, 0.0, 0.046)),
-            ),
-            FrameTransformerCfg.FrameCfg(
-                prim_path="{ENV_REGEX_NS}/Robot/panda_leftfinger",
-                name="tool_leftfinger",
-                offset=OffsetCfg(pos=(0.0, 0.0, 0.046)),
-            ),
-        ],
-    )
-
-
 @configclass
 class ObjectTableSceneCfg(InteractiveSceneCfg):
-    """Base scene: robot + table + ground + light."""
+    """Base scene: table + ground + light."""
 
-    robot: ArticulationCfg = FRANKA_ARM_ONLY_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
     table = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Table",
         init_state=AssetBaseCfg.InitialStateCfg(pos=[0.5, 0, 0], rot=[0.707, 0, 0, 0.707]),
@@ -94,7 +57,6 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
         prim_path="/World/light",
         spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
     )
-    ee_frame: FrameTransformerCfg = _build_default_ee_frame_cfg()
 
     def __post_init__(self):
         super().__post_init__()
@@ -237,22 +199,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
 @configclass
 class ActionsCfg:
     """Action specifications for the environment."""
-    arm_action: DifferentialInverseKinematicsActionCfg = DifferentialInverseKinematicsActionCfg(
-        asset_name="robot",
-        joint_names=["panda_joint.*"],
-        body_name="panda_hand",
-        controller=DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls"),
-        body_offset=DifferentialInverseKinematicsActionCfg.OffsetCfg(
-            pos=[0.0, 0.0, 0.1034],
-        ),
-    )
-
-    gripper_action: mdp.BinaryJointPositionActionCfg = mdp.BinaryJointPositionActionCfg(
-        asset_name="robot",
-        joint_names=["panda_finger.*"],
-        open_command_expr={"panda_finger_.*": 0.04},
-        close_command_expr={"panda_finger_.*": 0.0},
-    )
+    pass
 
 
 @configclass
@@ -262,10 +209,6 @@ class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         actions = ObsTerm(func=mdp.last_action)
-        root_pos = ObsTerm(func=mdp.root_pos_w)
-        root_quat = ObsTerm(func=mdp.root_quat_w)
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         cube_pos = ObsTerm(
             func=mdp.all_cube_positions_in_world_frame,
             params={"max_cubes": ASSEMBLING_MAX_CUBES},
@@ -274,19 +217,6 @@ class ObservationsCfg:
         cube_quat = ObsTerm(
             func=mdp.all_cube_orientations_in_world_frame,
             params={"max_cubes": ASSEMBLING_MAX_CUBES},
-        )
-        ee_pos = ObsTerm(func=mdp.ee_pos, params={"ee_frame_cfg": SceneEntityCfg("ee_frame")})
-        ee_quat = ObsTerm(func=mdp.ee_quat, params={"ee_frame_cfg": SceneEntityCfg("ee_frame")})
-        gripper_pos = ObsTerm(func=mdp.gripper_pos)
-        gripper_closed = ObsTerm(func=mdp.gripper_closed_flag)
-        grasped = ObsTerm(
-            func=mdp.object_grasped,
-            params={
-                "robot_cfg": SceneEntityCfg("robot"),
-                "ee_frame_cfg": SceneEntityCfg("ee_frame"),
-                "object_cfg": SceneEntityCfg("cube_1"),
-                "diff_threshold": 0.06,
-            },
         )
 
         def __post_init__(self):
@@ -342,23 +272,14 @@ class RewardsCfg:
 @configclass
 class EventsCfg:
     """Event terms shared by assembling tasks."""
-
-    init_franka_arm_pose = EventTerm(
-        func=franka_stack_events.set_default_joint_pose,
-        mode="reset",
-        params={
-            "default_pose": [0.0444, -0.1894, -0.1107, -2.5148, 0.0044, 2.3775, 0.6952, 0.0400, 0.0400],
-        },
-    )
-
-    # No suction event: grasping is done by the native Franka parallel gripper.
+    pass
 
 
 @configclass
 class AssemblingEnvCfg(ManagerBasedRLEnvCfg):
     """Base assembling environment config."""
 
-    scene: ObjectTableSceneCfg = ObjectTableSceneCfg(num_envs=4096, env_spacing=2.5, replicate_physics=False)
+    scene: ObjectTableSceneCfg = ObjectTableSceneCfg(num_envs=1, env_spacing=2.5, replicate_physics=False)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     rewards: RewardsCfg = RewardsCfg()
@@ -367,14 +288,56 @@ class AssemblingEnvCfg(ManagerBasedRLEnvCfg):
 
     commands = None
     curriculum = None
-    gripper_joint_names = ["panda_finger_.*"]
-    gripper_open_val = 0.04
-    gripper_threshold = 0.005
 
     xr: XrCfg = XrCfg(
         anchor_pos=(-0.1, -0.5, -1.05),
         anchor_rot=(0.866, 0, 0, -0.5),
     )
 
+    # Optional override in derived env configs.
+    runtime_builder = None
+
     def __post_init__(self):
-        AssemblingCfgOverride.from_env().apply(self, arm_joint_names=FRANKA_ARM_JOINT_NAMES)
+        self.decimation = 5
+        self.episode_length_s = 600.0
+        self.sim.dt = 0.01
+        self.sim.render_interval = 5
+        self.sim.physx.bounce_threshold_velocity = 0.01
+        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 1024
+        self.sim.physx.friction_correlation_distance = 0.00625
+        if hasattr(self.sim.physx, "enable_external_forces_every_iteration"):
+            self.sim.physx.enable_external_forces_every_iteration = True
+
+    def build_server_runtime(
+        self,
+        *,
+        env,
+        cube_names,
+        cube_size: float,
+        max_tasks: int,
+        grid_origin,
+        cell_size: float,
+        grid_size: int,
+    ):
+        """Unified runtime entrypoint used by server side."""
+        builder = getattr(self, "runtime_builder", None)
+        if callable(builder):
+            return builder(
+                env=env,
+                cube_names=cube_names,
+                cube_size=cube_size,
+                max_tasks=max_tasks,
+                grid_origin=grid_origin,
+                cell_size=cell_size,
+                grid_size=grid_size,
+            )
+        return mdp.build_franka_runtime(
+            env=env,
+            cube_names=cube_names,
+            cube_size=cube_size,
+            max_tasks=max_tasks,
+            grid_origin=grid_origin,
+            cell_size=cell_size,
+            grid_size=grid_size,
+        )

@@ -507,6 +507,9 @@ class OperationalSpaceControllerAction(ActionTerm):
         # Pre-process the raw actions for operational space control.
         self._preprocess_actions(actions)
 
+        # Optional runtime gate: task logic can enable yaw control for selected envs only.
+        self._apply_runtime_yaw_axis_gate()
+
         # set command into controller
         self._osc.set_command(
             command=self._processed_actions,
@@ -779,3 +782,27 @@ class OperationalSpaceControllerAction(ActionTerm):
                 min=self.cfg.controller_cfg.motion_damping_ratio_limits_task[0],
                 max=self.cfg.controller_cfg.motion_damping_ratio_limits_task[1],
             )
+
+    def _apply_runtime_yaw_axis_gate(self):
+        """Apply optional per-env yaw-axis gate from runtime state.
+
+        If ``_vagen_osc_yaw_lock_mask`` exists on the environment, OSC yaw-axis control (axis index 5)
+        is enabled only where the mask is ``True``.
+        """
+        env_ref = getattr(self._env, "unwrapped", self._env)
+        yaw_lock_mask = getattr(env_ref, "_vagen_osc_yaw_lock_mask", None)
+        if yaw_lock_mask is None:
+            return
+
+        if isinstance(yaw_lock_mask, torch.Tensor):
+            yaw_lock_mask_t = yaw_lock_mask.to(device=self.device, dtype=torch.bool).reshape(-1)
+        else:
+            yaw_lock_mask_t = torch.as_tensor(yaw_lock_mask, device=self.device, dtype=torch.bool).reshape(-1)
+        if yaw_lock_mask_t.numel() != self.num_envs:
+            return
+
+        motion_axes_task = torch.as_tensor(
+            self.cfg.controller_cfg.motion_control_axes_task, dtype=torch.float, device=self.device
+        ).reshape(1, -1).repeat(self.num_envs, 1)
+        motion_axes_task[:, 5] = yaw_lock_mask_t.to(dtype=motion_axes_task.dtype)
+        self._osc._selection_matrix_motion_task[:] = torch.diag_embed(motion_axes_task)

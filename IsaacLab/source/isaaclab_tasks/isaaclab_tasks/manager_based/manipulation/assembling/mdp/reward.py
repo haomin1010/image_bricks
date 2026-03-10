@@ -1,4 +1,4 @@
-"""Reward utilities for assembling tasks."""
+"""Placeholder reward definitions for assembling tasks."""
 
 from __future__ import annotations
 
@@ -11,5 +11,8 @@ if TYPE_CHECKING:
 
 
 def placeholder_reward(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """No-op reward placeholder. Returns zero reward for every environment."""
+    """No-op reward placeholder."""
     return torch.zeros((env.num_envs,), device=env.device, dtype=torch.float32)
+
+
+__all__ = ["placeholder_reward"]

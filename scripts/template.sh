@@ -79,11 +79,12 @@ vagen_eval_init_defaults() {
   #   ISAAC_CUDA_VISIBLE_DEVICES=0 DEVICE=cuda:0 ISAAC_HEADLESS=1 bash ...
   vagen__export_default ISAAC_CUDA_VISIBLE_DEVICES "0"
   vagen__export_default DEVICE "cuda:0" # TODO:
-  vagen__export_default ISAAC_HEADLESS "1" # TODO:
+  vagen__export_default ISAAC_HEADLESS "0" # default to headed mode
 
   # ---- Isaac server argv (consumed by Python: vagen.evaluate.run_eval) ----
   vagen__export_default ISAAC_SERVER_NUM_ENVS "1"
-  vagen__export_default ISAAC_SERVER_TASK "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0"
+  vagen__export_default ISAAC_SERVER_TASK "multipicture_teleport_stack_from_begin"
+  vagen__export_default VAGEN_MAX_CUBES "16"
   vagen__export_default ISAAC_SERVER_RECORD "0"
   vagen__export_default ISAAC_SERVER_VIDEO_LENGTH "0"
   vagen__export_default ISAAC_SERVER_VIDEO_INTERVAL "0"
@@ -93,7 +94,10 @@ vagen_eval_init_defaults() {
   : "${ISAAC_SERVER_EXTRA_ARGS:=""}"
 
   # ---- Eval config + fileroot ----
-  vagen__export_default VAGEN_FILEROOT "${IMAGE_BRICKS_ROOT}/VAGEN"
+  vagen__export_default VAGEN_OUTPUT_ROOT "${IMAGE_BRICKS_ROOT}/outputs"
+  mkdir -p "${VAGEN_OUTPUT_ROOT}"
+  vagen__export_default VAGEN_SGLANG_LOG "${VAGEN_OUTPUT_ROOT}/sglang_server.log"
+  vagen__export_default VAGEN_FILEROOT "${IMAGE_BRICKS_ROOT}"
   vagen__export_default VAGEN_EVAL_CONFIG_DEFAULT "${IMAGE_BRICKS_ROOT}/VAGEN/examples/evaluate/isaac/config.yaml"
 
   # ---- Backend defaults ----

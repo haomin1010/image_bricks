@@ -77,10 +77,10 @@ class IsaacEnvServerProxy:
         return cmds
 
     # --- Methods for Trainer (Gym Remote Env) ---
-    async def remote_reset(self, env_id, seed):
+    async def remote_reset(self, env_id, reset_payload):
         """Reset a specific environment slot."""
-        print(f"Trainer requested reset for slot {env_id}")
-        self.commands.append((env_id, "reset", seed))
+        print(f"Trainer requested reset for slot {env_id} payload={reset_payload}")
+        self.commands.append((env_id, "reset", reset_payload))
         # Wait for the simulation loop to perform the reset and publish new images.
         # Poll for up to ~5 seconds; this provides a soft sync so trainers see the post-reset state.
         images = []
@@ -184,7 +184,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--task", type=str, default="multipicture_assembling_from_begin")
+    parser.add_argument("--task", type=str, default="multipicture_franka_stack_from_begin")
     # Allow enabling/disabling headless mode via CLI
     parser.add_argument("--headless", dest="headless", action="store_true", help="Run Isaac in headless mode (no GUI).")
     parser.add_argument("--no-headless", dest="headless", action="store_false", help="Run Isaac with GUI (disable headless).")
@@ -193,13 +193,13 @@ def main():
         "--video-length",
         type=int,
         default=0,
-        help="Recorded clip length in simulation steps (0 = keep recording until close/reset).",
+        help="Deprecated (ignored). Video length is hardcoded to 0.",
     )
     parser.add_argument(
         "--video-interval",
         type=int,
         default=0,
-        help="Start a new clip every N simulation steps (0 = start once at step 0).",
+        help="Deprecated (ignored). Video interval is hardcoded to 0.",
     )
     parser.add_argument("--ik-lambda-val", type=float, default=None)
     args = parser.parse_args()
@@ -247,7 +247,7 @@ def main():
         "task": args.task,
         "headless": args.headless,
         "enable_cameras": True,
-        "cube_size": 0.045,
+        "cube_size": 0.0203 * 2.0,
     }
     
     print(f"Starting Isaac server with config: {config}")
@@ -290,7 +290,7 @@ def main():
         "build_env_cfg",
         lambda: build_env_cfg(
             task_name=resolved_task_id,
-            cube_size=config.get("cube_size", 0.045),
+            cube_size=config.get("cube_size", 0.0203 * 2.0),
         ),
     )
 
@@ -321,6 +321,7 @@ def main():
             cube_names = candidates
         else:
             cube_names = [f"cube_{i + 1}" for i in range(8)]
+    print(f"[INIT] cube_names from env cfg ({len(cube_names)}): {cube_names}")
 
     env = _run_with_init_heartbeat(
         "gym.make",
@@ -332,10 +333,13 @@ def main():
     if args.record:
         out_dir = os.path.join(os.getcwd(), "outputs", "videos")
         os.makedirs(out_dir, exist_ok=True)
-        video_interval = int(args.video_interval)
-        video_length = int(args.video_length)
-        if video_length < 0:
-            video_length = 0
+        if int(args.video_length) != 0 or int(args.video_interval) != 0:
+            print(
+                "[INFO]: Ignoring CLI video params and using hardcoded values "
+                "video_length=0, video_interval=0"
+            )
+        video_interval = 0
+        video_length = 0
         video_prefix = f"isaac_record_{args.task.replace('/', '_')}_{int(time.time())}"
         video_run_dir = os.path.join(out_dir, video_prefix)
         os.makedirs(video_run_dir, exist_ok=True)
@@ -388,7 +392,7 @@ def main():
         lambda: VagenStackExecutionManager(
             env=env,
             cube_names=cube_names,
-            cube_size=config.get("cube_size", 0.045),
+            cube_size=config.get("cube_size", 0.0203 * 2.0),
             ik_lambda_val=args.ik_lambda_val,
             cell_size=cell_size,
         ),
@@ -467,8 +471,14 @@ def main():
                 commands = []
             for env_id, cmd_type, data in commands:
                 if cmd_type == "reset":
-                    seed = data
-                    obs = exec_mgr.handle_reset(env_id=env_id, seed=seed)
+                    reset_payload = data if isinstance(data, dict) else {"seed": data}
+                    seed = reset_payload.get("seed")
+                    requested_num_tasks = reset_payload.get("num_tasks")
+                    obs = exec_mgr.handle_reset(
+                        env_id=env_id,
+                        seed=seed,
+                        requested_num_tasks=requested_num_tasks,
+                    )
                     _start_manual_recording(reason=f"remote_reset_env_{env_id}")
                 elif cmd_type == "step":
                     goal = data
@@ -487,11 +497,12 @@ def main():
                         continue
             
 
-            # Camera readback is expensive. Only capture frames when proxy
-            # requests are pending; video recording is handled by RecordVideo.
-            exec_mgr.capture_requested_images(commands=commands, proxy_actor=proxy_actor)
-
             obs = exec_mgr.step(obs)
+
+            # Capture after stepping so returned images reflect the latest state
+            # (helps reduce temporal ghosting artifacts after teleport updates).
+            # Camera readback is expensive, so only do this when requests exist.
+            exec_mgr.capture_requested_images(commands=commands, proxy_actor=proxy_actor)
 
     except KeyboardInterrupt:
         shutdown_reason = "keyboard interrupt"
