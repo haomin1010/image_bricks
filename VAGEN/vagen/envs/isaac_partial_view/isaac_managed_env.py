@@ -1,36 +1,47 @@
 """
-Isaac managed environment for BrickIsaac.
+Isaac managed environment for BrickIsaac partial-view mode.
 
-This environment supports three action types from the VLM:
-1. Query: {"query": [cam_id, ...]}
-2. Place: {"x": INT, "y": INT, "z": INT}
-3. Submit: submit
+Partial-view policy:
+- Reset shows full target multi-view images (5 cameras).
+- The model may query exactly one camera per turn with {"query": [id]}.
+- Reward/termination/task evaluation follows the same logic as full-view mode.
 """
 
 from __future__ import annotations
 
-import logging
-import ray
 import asyncio
+import logging
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import ray
 from PIL import Image
 
 from ..gym_image_env import GymImageEnv
+from .reward_manager import IsaacRewardConfig, IsaacRewardManager, PlacementRewardResult
+from .task_spec import BrickPosition, TaskSpec, load_snapshot_task_spec
+from .termination_manager import IsaacTerminationConfig, IsaacTerminationManager, TerminationStatus
 from .utils.prompt import (
     action_template,
+    format_prompt,
     get_checked_system_prompt,
     init_observation_template,
+    query_result_template,
+    system_prompt,
     target_description,
 )
-from .reward_manager import IsaacRewardConfig, IsaacRewardManager, PlacementRewardResult
-from .task_spec import BrickPosition, TaskSpec, load_task_spec, scan_ground_truth_entries
-from .termination_manager import IsaacTerminationConfig, IsaacTerminationManager, TerminationStatus
 from .utils.utils import parse_response
 
 logger = logging.getLogger(__name__)
+MAX_PARTIAL_VIEW_CAMERAS = 5
+DEFAULT_DATASET_ROOT = str(
+    Path(__file__).resolve().parents[4]
+    / "assets"
+    / "dataset"
+    / "output_snapshots"
+    / "test"
+)
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -41,19 +52,16 @@ def _coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
 @dataclass
 class IsaacManagedEnvConfig:
-    """Configuration for the Isaac-managed environment."""
+    """Configuration for the Isaac partial-view managed environment."""
 
     # Executor / manager settings
-    num_total_envs: int = 64  # total sub-envs in the DirectVectorEnv
+    num_total_envs: int = 64
 
     # Cameras
-    n_cameras: int = 3  # total cameras (IDs 0 .. n_cameras-1)
+    n_cameras: int = MAX_PARTIAL_VIEW_CAMERAS
+    n_views: Optional[int] = None  # compatibility with legacy YAML keys
     image_size: Tuple[int, int] = (224, 224)
 
     # Step limits
@@ -72,12 +80,14 @@ class IsaacManagedEnvConfig:
     max_attempts_factor: float = 1.5
 
     # Dataset
-    dataset_root: str = "/mnt/data/image_bricks/assets/snapshots"
+    dataset_root: str = DEFAULT_DATASET_ROOT
     collapse_mock_after_attempt: int = -1
 
     def __post_init__(self) -> None:
         self.num_total_envs = int(self.num_total_envs)
-        self.n_cameras = int(self.n_cameras)
+        if self.n_views not in (None, ""):
+            self.n_cameras = int(self.n_views)
+        self.n_cameras = max(1, min(MAX_PARTIAL_VIEW_CAMERAS, int(self.n_cameras)))
         self.image_size = tuple(int(value) for value in self.image_size)
         self.max_steps = int(self.max_steps)
         self.use_example_in_sys_prompt = _coerce_bool(self.use_example_in_sys_prompt)
@@ -90,22 +100,16 @@ class IsaacManagedEnvConfig:
         self.floating_placement_penalty = float(self.floating_placement_penalty)
         self.non_candidate_penalty = float(self.non_candidate_penalty)
         self.max_attempts_factor = float(self.max_attempts_factor)
+        if not self.dataset_root:
+            self.dataset_root = DEFAULT_DATASET_ROOT
         self.collapse_mock_after_attempt = int(self.collapse_mock_after_attempt)
+
 
 _CONFIG_FIELDS = {f.name for f in fields(IsaacManagedEnvConfig)}
 
 
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
-
 class IsaacManagedEnv(GymImageEnv):
-    """
-    GymImageEnv proxy backed by the IsaacEnvServer Ray Actor.
-    Each agent loop creates one ``IsaacManagedEnv`` instance. On ``reset()``
-    a sub-env ID is allocated from the global server; on ``close()`` it is
-    automatically returned when the instance is destroyed or explicitly closed.
-    """
+    """GymImageEnv proxy backed by the detached IsaacEnvServer Ray actor."""
 
     _server_handle = None
     _server_lock = asyncio.Lock()
@@ -113,18 +117,19 @@ class IsaacManagedEnv(GymImageEnv):
     def __init__(self, env_config: Dict[str, Any]):
         super().__init__(env_config)
 
-        # Filter to known config fields
         known = {k: v for k, v in env_config.items() if k in _CONFIG_FIELDS}
         self.config = IsaacManagedEnvConfig(**known)
 
-        # Instance state
         self._sub_env_id: Optional[int] = None
         self.total_reward: float = 0.0
         self.steps_taken: int = 0
         self.trajectory: List[Dict[str, Any]] = []
         self._latest_scene_images: List[Image.Image] = []
+        self._dataset_images_cache: List[Image.Image] = []
         self._current_task_spec: TaskSpec = TaskSpec.empty()
-        self._current_ground_truth_path: Optional[Path] = None
+        self._current_dataset_entry: Optional[Dict[str, Any]] = None
+        # Track queried camera IDs since the last placement step.
+        self._queried_cameras_since_last_placement: set[int] = set()
 
         reward_config = IsaacRewardConfig(
             format_reward=self.config.format_reward,
@@ -140,12 +145,11 @@ class IsaacManagedEnv(GymImageEnv):
             )
         )
 
-        # Scan dataset directory and cache valid entries on startup
-        self._dataset_entries: List[Dict] = self._scan_dataset(self.config.dataset_root)
+        self._dataset_entries: List[Dict[str, Any]] = self._scan_dataset(self.config.dataset_root)
         if not self._dataset_entries:
             logger.warning("Dataset is empty or not found at: %s", self.config.dataset_root)
         else:
-            logger.info("Loaded %d dataset entries from %s", len(self._dataset_entries), self.config.dataset_root)
+            logger.debug("Loaded %d dataset entries from %s", len(self._dataset_entries), self.config.dataset_root)
 
     async def _get_server(self):
         """Lazily obtain the per-worker server handle singleton."""
@@ -155,116 +159,90 @@ class IsaacManagedEnv(GymImageEnv):
         async with IsaacManagedEnv._server_lock:
             if IsaacManagedEnv._server_handle is not None:
                 return IsaacManagedEnv._server_handle
-            
+
             try:
                 IsaacManagedEnv._server_handle = ray.get_actor("IsaacEnvServer")
-                logger.info("Connected to existing IsaacEnvServer actor.")
+                logger.debug("Connected to existing IsaacEnvServer actor.")
             except ValueError:
                 logger.info("IsaacEnvServer actor not found. It should be started by the main script.")
                 raise RuntimeError("IsaacEnvServer actor not found. Ensure it is started as a detached actor.")
-            
-            return IsaacManagedEnv._server_handle
 
-    # ------------------------------------------------------------------
-    # GymImageEnv interface
-    # ------------------------------------------------------------------
+            return IsaacManagedEnv._server_handle
 
     async def system_prompt(self) -> Dict[str, Any]:
         """Return the system-level prompt observation."""
-        return {
-            "obs_str": get_checked_system_prompt(
-                n_cameras=self.config.n_cameras,
-                add_example=self.config.use_example_in_sys_prompt,
-            )
-        }
+        return {"obs_str": self._build_system_prompt()}
 
     async def reset(self, seed: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """
-        Allocate a sub-env ID (on first call), then load the initial observation
-        from the pre-rendered dataset instead of querying the Isaac simulation.
-
-        Images are selected deterministically from the dataset using ``seed``.
-        The JSON metadata associated with the chosen snapshot is used to build
-        the target-block description provided to the VLM.
-        """
+        """Reset one env slot and return partial-view initial observation."""
         server = await self._get_server()
 
-        # Allocate once; reuse the same sub-env ID across resets
         if self._sub_env_id is None:
             self._sub_env_id = await server.allocate_env_id.remote()
 
-        self._current_ground_truth_path = self._select_ground_truth_path(seed)
+        self._current_dataset_entry = self._select_dataset_entry(seed)
         self._current_task_spec = self._load_current_task_spec()
         requested_num_tasks = int(max(1, self._current_task_spec.total_blocks))
 
-        # Reset physics side (slot state / cube positions) but ignore its images
         try:
             reset_payload = {"seed": int(seed), "num_tasks": requested_num_tasks}
             response = await asyncio.wait_for(
-                server.remote_reset.remote(self._sub_env_id, reset_payload), timeout=120.0
+                server.remote_reset.remote(self._sub_env_id, reset_payload),
+                timeout=120.0,
             )
-            env_info = response.get("info", {})
-        except Exception as e:
-            logger.error("Failed to reset Isaac environment (timeout or crash): %s", e)
+            env_info = dict(response.get("info", {}) or {})
+        except Exception as exc:
+            logger.error("Failed to reset Isaac environment (timeout or crash): %s", exc)
             env_info = {}
 
         self.total_reward = 0.0
         self.steps_taken = 0
         self.trajectory = []
+        self._queried_cameras_since_last_placement.clear()
 
-        # Load pre-rendered images from dataset (deterministic via seed)
-        all_images = self._load_dataset_images(seed)
-        # Cache for use in step() query actions (cam 0=top, 1=front, 2=side, 3=iso, 4=iso2)
-        self._dataset_images_cache = all_images
+        all_images = self._load_dataset_images()
+        self._dataset_images_cache = list(all_images)
         self._latest_scene_images = list(all_images)
 
         self.reward_manager.reset(self._current_task_spec)
         self.termination_manager.reset(self._current_task_spec)
 
-        # Build target description from dataset JSON
-        target_desc = target_description(
+        desc = target_description(
             self._current_task_spec,
             max_attempts=self.termination_manager.max_attempts,
         )
-        env_info["target_description"] = target_desc
+        env_info["target_description"] = desc
 
-        logger.info(
-            "reset: seed=%d dataset_index=%d gt=%s images=%d max_attempts=%d requested_num_tasks=%d",
+        logger.debug(
+            "partial-reset: seed=%d dataset_index=%d gt=%s images=%d max_attempts=%d requested_num_tasks=%d",
             seed,
             seed % max(len(self._dataset_entries), 1),
-            self._current_ground_truth_path.name if self._current_ground_truth_path else "none",
+            self._current_dataset_entry["json"].name if self._current_dataset_entry else "none",
             len(all_images),
             self.termination_manager.max_attempts,
             requested_num_tasks,
         )
 
-        # Build initial observation: ALL dataset views so VLM understands the target from every angle
-        cam_labels = ["Top view", "Front view", "Side view", "Iso view", "Iso2 view"]
-        img_phs = "\n".join(self.config.image_placeholder for _ in all_images)
-        obs_text = (target_desc + "\n" if target_desc else "") + init_observation_template(
-            img_placeholders=img_phs,
-            camera_labels=cam_labels[: len(all_images)],
+        target_view_count = MAX_PARTIAL_VIEW_CAMERAS
+        target_images = list(all_images[:target_view_count])
+        if len(target_images) < target_view_count:
+            target_images.extend(
+                self._make_fallback_images(
+                    count=target_view_count - len(target_images),
+                    color=(40, 40, 40),
+                )
+            )
+        target_labels = [f"Target camera {idx}" for idx in range(target_view_count)]
+        target_placeholders = "\n".join(self.config.image_placeholder for _ in range(target_view_count))
+        obs_text = (desc + "\n" if desc else "") + init_observation_template(
+            img_placeholders=target_placeholders,
+            camera_labels=target_labels,
         )
-        obs = self._make_multi_image_obs(obs_text, all_images)
+        obs = self._make_multi_image_obs(obs_text, target_images)
         return obs, env_info
 
-    async def step(
-        self, action_str: str
-    ) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
-        """
-        Parse the LLM action and execute it.
-
-        Supported actions:
-        - **Query**:  ``{"query": [cam_id, ...]}`` — returns requested camera views.
-        - **Place**:  ``{"x": INT, "y": INT, "z": INT}`` — places a brick, returns camera 0.
-        - **Submit**: ``submit`` — ends the episode.
-
-        Args:
-            action_str: Raw LLM output string.
-
-        Returns:
-            ``(obs, reward, done, info)``
-        """
+    async def step(self, action_str: str) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
+        """Parse action, step Isaac when needed, and evaluate reward/termination."""
         self.steps_taken += 1
         parsed = parse_response(action_str)
 
@@ -274,19 +252,18 @@ class IsaacManagedEnv(GymImageEnv):
         info.update(parsed)
 
         coordinate = parsed.get("coordinate")
-        is_submit = parsed.get("is_submit", False)
-        format_correct = parsed.get("format_correct", False)
-        reward += self.reward_manager.format_reward(format_correct)
+        query_cameras = parsed.get("query_cameras")
+        is_submit = bool(parsed.get("is_submit", False))
+        action_valid = bool(parsed.get("format_correct", False))
 
         placement_result: Optional[PlacementRewardResult] = None
         termination_status: Optional[TerminationStatus] = None
         isaac_info: Dict[str, Any] = {}
         external_done = False
-        query_cameras = parsed.get("query_cameras")
 
         metrics = {
             "turn_metrics": {
-                "action_is_valid": format_correct,
+                "action_is_valid": action_valid,
                 "action_is_effective": False,
             },
             "traj_metrics": {
@@ -298,24 +275,23 @@ class IsaacManagedEnv(GymImageEnv):
         }
 
         if coordinate is not None:
-            # ----------------------------------------------------------
-            # Place action — execute physics then evaluate reward/termination
-            # ----------------------------------------------------------
             goal = {"x": coordinate["x"], "y": coordinate["y"], "z": coordinate["z"]}
             server = await self._get_server()
             try:
                 step_response = await asyncio.wait_for(
-                    server.remote_step.remote(self._sub_env_id, goal), timeout=300.0
+                    server.remote_step.remote(self._sub_env_id, goal),
+                    timeout=300.0,
                 )
                 isaac_info = dict(step_response.get("info", {}) or {})
                 external_done = bool(step_response.get("done", False))
-            except Exception as e:
-                logger.error("Failed to step Isaac (timeout or crash): %s", e)
+            except Exception as exc:
+                logger.error("Failed to step Isaac (timeout or crash): %s", exc)
                 isaac_info = {"timeout": True}
                 external_done = True
 
             placement_result = self.reward_manager.evaluate_placement(BrickPosition.from_mapping(goal))
             reward += placement_result.reward_delta
+
             termination_status = self.termination_manager.evaluate(
                 placement_attempted=True,
                 submit_requested=False,
@@ -324,16 +300,25 @@ class IsaacManagedEnv(GymImageEnv):
                 external_done=external_done,
             )
 
-            isaac_images = await self._render_env_images()
-            obs_text = self._build_placement_obs_text(coordinate, placement_result, termination_status)
+            scene_images = await self._render_env_images()
+            cam0_images = [scene_images[0]] if scene_images else self._make_fallback_images(count=1, color=(40, 40, 40))
+            feedback = self._build_placement_feedback(coordinate, placement_result, termination_status)
+            obs = self._make_multi_image_obs(
+                action_template(
+                    action_result=feedback,
+                    img_placeholder=self.config.image_placeholder,
+                ),
+                cam0_images,
+                action_str=action_str,
+            )
 
             done = termination_status.done
             metrics["turn_metrics"]["action_is_effective"] = True
             metrics["traj_metrics"]["task_completed"] = termination_status.task_completed
             metrics["traj_metrics"]["collapse_detected"] = termination_status.collapsed
             metrics["traj_metrics"]["termination_reason"] = termination_status.reason
-
-            obs = self._make_multi_image_obs(obs_text, isaac_images, action_str=action_str)
+            # New placement opens a new query window.
+            self._queried_cameras_since_last_placement.clear()
             info.update(
                 {
                     "timeout": bool(isaac_info.get("timeout", False)),
@@ -343,19 +328,17 @@ class IsaacManagedEnv(GymImageEnv):
             )
 
         elif is_submit:
-            # ----------------------------------------------------------
-            # Submit action — terminate and report whether the current structure matches the target
-            # ----------------------------------------------------------
             goal = {"type": "submit"}
             server = await self._get_server()
             try:
                 step_response = await asyncio.wait_for(
-                    server.remote_step.remote(self._sub_env_id, goal), timeout=300.0
+                    server.remote_step.remote(self._sub_env_id, goal),
+                    timeout=300.0,
                 )
                 isaac_info = dict(step_response.get("info", {}) or {})
                 external_done = bool(step_response.get("done", False))
-            except Exception as e:
-                logger.error("Failed to submit Isaac (timeout or crash): %s", e)
+            except Exception as exc:
+                logger.error("Failed to submit Isaac (timeout or crash): %s", exc)
                 isaac_info = {"timeout": True}
                 external_done = True
 
@@ -367,8 +350,16 @@ class IsaacManagedEnv(GymImageEnv):
                 external_done=external_done,
             )
 
-            isaac_images = await self._render_env_images()
-            obs_text = self._build_submit_obs_text(termination_status)
+            scene_images = await self._render_env_images()
+            cam0_images = [scene_images[0]] if scene_images else self._make_fallback_images(count=1, color=(40, 40, 40))
+            obs = self._make_multi_image_obs(
+                action_template(
+                    action_result=self._build_submit_feedback(termination_status),
+                    img_placeholder=self.config.image_placeholder,
+                ),
+                cam0_images,
+                action_str=action_str,
+            )
 
             done = termination_status.done
             metrics["turn_metrics"]["action_is_effective"] = True
@@ -376,40 +367,70 @@ class IsaacManagedEnv(GymImageEnv):
             metrics["traj_metrics"]["task_completed"] = termination_status.task_completed
             metrics["traj_metrics"]["collapse_detected"] = termination_status.collapsed
             metrics["traj_metrics"]["termination_reason"] = termination_status.reason
-
-            obs = self._make_multi_image_obs(obs_text, isaac_images, action_str=action_str)
             info.update({"timeout": bool(isaac_info.get("timeout", False))})
 
         elif query_cameras is not None:
-            # ----------------------------------------------------------
-            # Query action — keep the current scene unchanged and return selected views
-            # ----------------------------------------------------------
             scene_images = await self._render_env_images()
-            selected_ids = [cam_id for cam_id in query_cameras if 0 <= cam_id < len(scene_images)]
-            selected_images = [scene_images[cam_id] for cam_id in selected_ids]
-            if not selected_images:
-                selected_images = self._make_fallback_images(count=1, color=(30, 30, 30))
-                selected_ids = []
+            max_cam = min(len(scene_images), int(self.config.n_cameras), MAX_PARTIAL_VIEW_CAMERAS)
+            selected_ids = [cam_id for cam_id in query_cameras if 0 <= cam_id < max_cam]
 
-            label_lines = [
-                f"Camera {cam_id}: {self.config.image_placeholder}" for cam_id in selected_ids
-            ] or [f"Camera unavailable: {self.config.image_placeholder}"]
-            obs_text = (
-                "[System]: Query result.\n"
-                + "\n".join(label_lines)
-                + "\nYou may place the next cube or submit when done."
-            )
-            obs = self._make_multi_image_obs(obs_text, selected_images, action_str=action_str)
+            if not selected_ids:
+                action_valid = False
+                metrics["turn_metrics"]["action_is_valid"] = False
+                cam0_images = [scene_images[0]] if scene_images else self._make_fallback_images(count=1, color=(30, 30, 30))
+                msg = (
+                    f"Invalid camera query: {query_cameras}. "
+                    f"Use exactly one camera ID: {{\"query\": [INT]}} with INT in 0..{max(0, max_cam - 1)}."
+                )
+                obs = self._make_multi_image_obs(
+                    action_template(
+                        action_result=msg,
+                        img_placeholder=self.config.image_placeholder,
+                    ),
+                    cam0_images,
+                    action_str=action_str,
+                )
+            else:
+                selected_id = selected_ids[0]
+                if selected_id in self._queried_cameras_since_last_placement:
+                    action_valid = False
+                    metrics["turn_metrics"]["action_is_valid"] = False
+                    cam0_images = [scene_images[0]] if scene_images else self._make_fallback_images(count=1, color=(30, 30, 30))
+                    msg = (
+                        f"Camera {selected_id} has already been queried since the last placement. "
+                        "Please query a different camera first, or place a block."
+                    )
+                    obs = self._make_multi_image_obs(
+                        action_template(
+                            action_result=msg,
+                            img_placeholder=self.config.image_placeholder,
+                        ),
+                        cam0_images,
+                        action_str=action_str,
+                    )
+                else:
+                    selected_images = [scene_images[selected_id]]
+                    obs = self._make_multi_image_obs(
+                        query_result_template(
+                            camera_id=selected_id,
+                            img_placeholder=self.config.image_placeholder,
+                        ),
+                        selected_images,
+                        action_str=action_str,
+                    )
+                    self._queried_cameras_since_last_placement.add(int(selected_id))
+                    metrics["turn_metrics"]["action_is_effective"] = True
 
         else:
-            # ----------------------------------------------------------
-            # Parse failure — use blank image, no server call
-            # ----------------------------------------------------------
-            cam0_images = self._make_fallback_images(count=1, color=(30, 30, 30))
+            action_valid = False
+            metrics["turn_metrics"]["action_is_valid"] = False
+            scene_images = await self._render_env_images()
+            cam0_images = [scene_images[0]] if scene_images else self._make_fallback_images(count=1, color=(30, 30, 30))
             msg = (
-                'Could not parse your action. Valid formats:\n'
+                "Could not parse your action. Valid formats:\n"
+                f'  Query one camera: {{"query": [2]}} (ID 0..{max(0, self.config.n_cameras - 1)})\n'
                 '  Place a brick: {"x": 2, "y": 3, "z": 0}\n'
-                '  Submit: submit'
+                "  Submit: submit"
             )
             obs = self._make_multi_image_obs(
                 action_template(
@@ -420,7 +441,8 @@ class IsaacManagedEnv(GymImageEnv):
                 action_str=action_str,
             )
 
-        # Step limit
+        reward += self.reward_manager.format_reward(action_valid)
+
         if self.steps_taken >= self.config.max_steps and not done:
             done = True
             if termination_status is None:
@@ -457,6 +479,7 @@ class IsaacManagedEnv(GymImageEnv):
         metrics["traj_metrics"]["task_completed"] = termination_status.task_completed
         metrics["traj_metrics"]["collapse_detected"] = termination_status.collapsed
         metrics["traj_metrics"]["termination_reason"] = termination_status.reason
+
         info["metrics"] = metrics
         info["success"] = termination_status.success
         info["termination"] = {
@@ -468,14 +491,13 @@ class IsaacManagedEnv(GymImageEnv):
             "max_attempts": termination_status.max_attempts,
         }
         info["reward_breakdown"] = {
-            "format_reward": self.reward_manager.format_reward(format_correct),
+            "format_reward": self.reward_manager.format_reward(action_valid),
             "placement_reward": 0.0 if placement_result is None else placement_result.reward_delta,
         }
         self.total_reward += reward
         info["total_reward"] = self.total_reward
         info["remaining_target_blocks"] = len(self.reward_manager.remaining_target_positions())
 
-        # Record step trajectory
         self.trajectory.append(
             {
                 "step_idx": self.steps_taken,
@@ -505,33 +527,26 @@ class IsaacManagedEnv(GymImageEnv):
                 server = await self._get_server()
                 await server.release_env_id.remote(self._sub_env_id)
             except Exception as exc:
-                logger.warning(
-                    "Failed to release env_id=%d: %s", self._sub_env_id, exc
-                )
+                logger.warning("Failed to release env_id=%d: %s", self._sub_env_id, exc)
             self._sub_env_id = None
-
-    # ------------------------------------------------------------------
-    # Reward / termination helpers
-    # ------------------------------------------------------------------
 
     def _get_correct_placement_reward(self) -> float:
         if self.config.correct_placement_reward is not None:
             return float(self.config.correct_placement_reward)
         return float(self.config.success_reward)
 
-    def _select_ground_truth_path(self, seed: int) -> Optional[Path]:
-        if self._dataset_entries:
-            entry = self._dataset_entries[seed % len(self._dataset_entries)]
-            return entry.get("json")
-        return None
+    def _select_dataset_entry(self, seed: int) -> Optional[Dict[str, Any]]:
+        if not self._dataset_entries:
+            return None
+        return self._dataset_entries[seed % len(self._dataset_entries)]
 
     def _load_current_task_spec(self) -> TaskSpec:
-        if self._current_ground_truth_path is None:
+        if self._current_dataset_entry is None:
             return TaskSpec.empty()
         try:
-            return load_task_spec(self._current_ground_truth_path)
+            return load_snapshot_task_spec(self._current_dataset_entry["json"])
         except Exception as exc:
-            logger.warning("Failed to load ground truth %s: %s", self._current_ground_truth_path, exc)
+            logger.warning("Failed to load snapshot data %s: %s", self._current_dataset_entry.get("json"), exc)
             return TaskSpec.empty()
 
     def _make_fallback_images(
@@ -557,92 +572,64 @@ class IsaacManagedEnv(GymImageEnv):
             logger.warning("Isaac render failed, using fallback images: %s", exc)
             if self._latest_scene_images:
                 return list(self._latest_scene_images)
-            n_images = len(getattr(self, "_dataset_images_cache", [])) or 5
+            n_images = len(self._dataset_images_cache) or max(1, int(self.config.n_cameras))
             fallback = self._make_fallback_images(count=n_images, color=(50, 50, 50))
             self._latest_scene_images = list(fallback)
             return fallback
 
-    def _build_placement_obs_text(
+    def _build_placement_feedback(
         self,
         coordinate: Dict[str, int],
         placement_result: PlacementRewardResult,
         termination_status: TerminationStatus,
     ) -> str:
-        cam_labels = ["Top", "Front", "Side", "Iso", "Iso2"]
-        label_lines = [
-            f"{cam_labels[i] if i < len(cam_labels) else f'Cam{i}'}: {self.config.image_placeholder}"
-            for i in range(len(self._latest_scene_images))
-        ]
-        status_lines = [
-            f"[System]: Block placed at ({coordinate['x']}, {coordinate['y']}, {coordinate['z']}).",
+        lines = [
+            f"Block placed at ({coordinate['x']}, {coordinate['y']}, {coordinate['z']}).",
             f"Rule check: {placement_result.feedback}",
             f"Placement attempts: {termination_status.placement_attempts}/{termination_status.max_attempts}.",
         ]
         if termination_status.done and termination_status.reason is not None:
-            status_lines.append(f"Episode status: terminated by {termination_status.reason}.")
+            lines.append(f"Episode terminated by {termination_status.reason}.")
         elif termination_status.task_completed:
-            status_lines.append("The current structure already matches the target. Submit when you are ready.")
-        status_lines.extend(label_lines)
-        status_lines.append("Place the next cube or submit when done.")
-        return "\n".join(status_lines)
+            lines.append("Current structure matches the target. You can submit now.")
+        return " ".join(lines)
 
-    def _build_submit_obs_text(self, termination_status: TerminationStatus) -> str:
-        cam_labels = ["Top", "Front", "Side", "Iso", "Iso2"]
-        label_lines = [
-            f"{cam_labels[i] if i < len(cam_labels) else f'Cam{i}'}: {self.config.image_placeholder}"
-            for i in range(len(self._latest_scene_images))
-        ]
+    def _build_submit_feedback(self, termination_status: TerminationStatus) -> str:
         verdict = (
             "Submission accepted: the current structure matches the target."
             if termination_status.success
             else "Submission finished the episode, but the current structure does not match the target."
         )
-        lines = [
-            f"[System]: {verdict}",
-            f"Placement attempts: {termination_status.placement_attempts}/{termination_status.max_attempts}.",
-            *label_lines,
-        ]
-        return "\n".join(lines)
+        return (
+            f"{verdict} Placement attempts: "
+            f"{termination_status.placement_attempts}/{termination_status.max_attempts}."
+        )
 
-    # ------------------------------------------------------------------
-    # Dataset helpers
-    # ------------------------------------------------------------------
-
-    def _scan_dataset(self, root: str) -> List[Dict]:
-        """Scan the dataset directory and return a sorted list of valid entries.
-
-        Each entry is a dict with keys:
-        - ``dir``:  ``pathlib.Path`` to the snapshot sub-directory
-        - ``stem``: directory name string (e.g. ``"0001"``)
-        - ``imgs``: list of 5 ``Path`` objects (top/front/side/iso/iso2)
-        - ``json``: ``Path`` to the ``_data.json`` file
-        """
-        entries: List[Dict] = []
+    def _scan_dataset(self, root: str) -> List[Dict[str, Any]]:
+        """Scan strict subdir dataset format and return valid entries."""
+        entries: List[Dict[str, Any]] = []
         root_path = Path(root)
         if not root_path.exists():
             logger.warning("Dataset root does not exist: %s", root)
             return entries
+
         img_suffixes = ["_top", "_front", "_side", "_iso", "_iso2"]
         for subdir in sorted(root_path.iterdir()):
             if not subdir.is_dir():
                 continue
-            stem = subdir.name  # e.g. "0001"
+            stem = subdir.name
             imgs = [subdir / f"{stem}{s}.png" for s in img_suffixes]
             json_path = subdir / f"{stem}_data.json"
             if all(p.exists() for p in imgs) and json_path.exists():
                 entries.append({"dir": subdir, "stem": stem, "imgs": imgs, "json": json_path})
         return entries
 
-    def _load_dataset_images(self, seed: int) -> List["Image.Image"]:
-        """Return the 5 pre-rendered images for a dataset entry chosen by *seed*.
-
-        Images are in order: top, front, side, iso, iso2 — matching the camera
-        index ordering used by the rest of the environment.
-        """
-        if not self._dataset_entries:
+    def _load_dataset_images(self) -> List[Image.Image]:
+        """Return the 5 pre-rendered images for the current dataset entry."""
+        if self._current_dataset_entry is None:
             return []
-        entry = self._dataset_entries[seed % len(self._dataset_entries)]
-        images: List["Image.Image"] = []
+        entry = self._current_dataset_entry
+        images: List[Image.Image] = []
         for img_path in entry["imgs"]:
             try:
                 images.append(Image.open(img_path).convert("RGB"))
@@ -651,9 +638,19 @@ class IsaacManagedEnv(GymImageEnv):
                 images.append(Image.new("RGB", self.config.image_size, (0, 0, 0)))
         return images
 
-    # ------------------------------------------------------------------
-    # Prompt / observation helpers
-    # ------------------------------------------------------------------
+    def _build_system_prompt(self) -> str:
+        """Compose the full system prompt string."""
+        try:
+            return get_checked_system_prompt(
+                n_cameras=self.config.n_cameras,
+                add_example=self.config.use_example_in_sys_prompt,
+            )
+        except Exception:
+            fmt = format_prompt(
+                n_cameras=self.config.n_cameras,
+                add_example=self.config.use_example_in_sys_prompt,
+            )
+            return system_prompt(n_cameras=self.config.n_cameras) + "\n" + fmt
 
     def _make_multi_image_obs(
         self,
@@ -661,18 +658,7 @@ class IsaacManagedEnv(GymImageEnv):
         images: List[Image.Image],
         action_str: str = "",
     ) -> Dict[str, Any]:
-        """Wrap an observation string and a variable-length image list into
-        the standard obs dict.
-
-        Args:
-            obs_str: Observation text (with ``<image>`` placeholders matching
-                the number of *images*).
-            images: Actual images to include in the observation.
-            action_str: The previous VLM response (used to detect hallucinated
-                vision tags and inject dummy images for alignment).
-        """
-        # Hallucination absorber: if the model hallucinated vision tags in its
-        # response, inject dummy images so the tag count stays in sync.
+        """Wrap text plus variable-length images into the standard observation dict."""
         vision_start_tag = "<|vision_start|>"
         hallucinated_tags = action_str.count(vision_start_tag)
 
@@ -680,14 +666,9 @@ class IsaacManagedEnv(GymImageEnv):
             return {"obs_str": obs_str}
 
         processed_images: List[Image.Image] = []
-
-        # 1. Dummy images for hallucinated tags (align with previous response)
         for _ in range(hallucinated_tags):
-            processed_images.append(
-                Image.new("RGB", self.config.image_size, (0, 0, 0))
-            )
+            processed_images.append(Image.new("RGB", self.config.image_size, (0, 0, 0)))
 
-        # 2. Actual images — resize if necessary
         for img in images:
             if img.size != self.config.image_size:
                 img = img.resize(self.config.image_size, Image.Resampling.LANCZOS)

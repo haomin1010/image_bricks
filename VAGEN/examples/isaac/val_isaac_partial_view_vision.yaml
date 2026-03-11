@@ -1,13 +1,14 @@
 envs:
-  - name: BrickIsaacFullView              # registered env name in env_registry.yaml
+  - name: BrickIsaacPartialView              # registered env name in env_registry.yaml
     n_envs: 256                   # smaller set for validation
-    data_source: brick_isaac      # nickname for logging
-    seed: [5001, 5256, 1]        # disjoint seeds from training set
-    max_turns: 10                 # same as training
+    data_source: brick_isaac_partial_view
+    seed: [5001, 5256, 1]
+    max_turns: 10
     response_length_per_turn: 256
     config:
-      backend: mock
+      backend: isaac
       n_views: 5
+      dataset_root: ${oc.env:VAGEN_ISAAC_DATASET_ROOT,/home/user/image_bricks/image_bricks/assets/dataset/output_snapshots/test}
       image_size: [256, 256]
       grid_size: 8
       max_steps: 200

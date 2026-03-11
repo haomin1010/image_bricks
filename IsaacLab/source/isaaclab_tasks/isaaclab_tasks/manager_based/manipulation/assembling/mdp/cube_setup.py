@@ -58,7 +58,6 @@ def build_aligned_cube_poses(
         x = x0 + col * spacing
         y = y0 + row * spacing
         aligned_poses.append([x, y, z, 1.0, 0.0, 0.0, 0.0])
-    print(f"[DBG CUBE_LAYOUT] aligned cube poses: {aligned_poses}")
     return aligned_poses
 
 
@@ -200,11 +199,6 @@ def configure_server_cube_layout(
     setattr(scene_cfg, f"{cube_name_prefix}1", template_cube_cfg)
 
     resolved_max_cubes = max(1, int(max_cubes))
-    print(
-        "[DBG CUBE_LAYOUT] "
-        f"grid_size={int(grid_size)} "
-        f"resolved_max_cubes={resolved_max_cubes}"
-    )
     cube_names = [f"{cube_name_prefix}{i + 1}" for i in range(resolved_max_cubes)]
 
     aligned_poses = build_aligned_cube_poses(

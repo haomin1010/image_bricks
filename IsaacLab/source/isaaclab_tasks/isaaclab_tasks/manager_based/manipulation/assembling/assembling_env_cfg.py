@@ -301,7 +301,25 @@ class AssemblingEnvCfg(ManagerBasedRLEnvCfg):
         self.decimation = 5
         self.episode_length_s = 600.0
         self.sim.dt = 0.01
-        self.sim.render_interval = 5
+        # Render every sim-step for crisper camera outputs in evaluation.
+        self.sim.render_interval = int(os.getenv("VAGEN_RENDER_INTERVAL", "1"))
+        if self.sim.render_interval < 1:
+            self.sim.render_interval = 1
+
+        # Prefer anti-aliasing modes with less temporal ghosting/blurring.
+        # Typical options: DLAA / TAA / OFF (depends on Isaac build).
+        render_cfg = getattr(self.sim, "render", None)
+        if render_cfg is not None:
+            aa_mode = os.getenv("VAGEN_RENDER_AA_MODE", "DLAA")
+            if hasattr(render_cfg, "antialiasing_mode"):
+                render_cfg.antialiasing_mode = aa_mode
+            # Disable denoiser by default for sharper edges in this task.
+            if hasattr(render_cfg, "enable_denoiser"):
+                render_cfg.enable_denoiser = os.getenv("VAGEN_RENDER_ENABLE_DENOISER", "0") in {"1", "true", "True"}
+            # Motion blur can produce "semi-transparent" trails after fast pose changes.
+            if hasattr(render_cfg, "enable_motion_blur"):
+                render_cfg.enable_motion_blur = os.getenv("VAGEN_RENDER_ENABLE_MOTION_BLUR", "0") in {"1", "true", "True"}
+
         self.sim.physx.bounce_threshold_velocity = 0.01
         self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
         self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 1024

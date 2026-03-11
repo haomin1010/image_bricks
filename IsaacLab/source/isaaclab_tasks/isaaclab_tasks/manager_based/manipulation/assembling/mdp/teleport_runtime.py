@@ -89,12 +89,6 @@ class TeleportRuntime:
         self._task_limit_per_env[env_id_i] = int(effective)
         self._active_cube_count_per_env[env_id_i] = int(effective)
         self._hide_inactive_cubes(env_id=env_id_i, active_cube_count=int(effective))
-        if effective < requested:
-            print(
-                "[WARN][TeleportRuntime] task limit clipped "
-                f"(env={env_id_i}, requested={requested}, available_entities={available_entities}, "
-                f"runtime_max={self.max_tasks}, effective={effective})"
-            )
 
     def _hide_inactive_cubes(self, *, env_id: int, active_cube_count: int) -> None:
         if active_cube_count >= len(self.cube_names):

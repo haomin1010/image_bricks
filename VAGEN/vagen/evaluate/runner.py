@@ -109,7 +109,7 @@ async def run_eval_parallel(
             dump_enabled=True,  # ignored in workflow; always dump executed episodes
             chat_config=data.get("chat_config") or {},
         )
-        logger.info(
+        logger.debug(
             "Job start env=%s tag=%s seed=%s config=%s",
             data.get("env_name"),
             tag_id,
