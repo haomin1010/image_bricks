@@ -555,22 +555,30 @@ class IsaacManagedEnv(GymImageEnv):
         return verdict
 
     def _scan_dataset(self, root: str) -> List[Dict[str, Any]]:
-        """Scan strict subdir dataset format and return valid entries."""
+        """Scan dataset recursively in strict new format."""
         entries: List[Dict[str, Any]] = []
         root_path = Path(root)
         if not root_path.exists():
             logger.warning("Dataset root does not exist: %s", root)
             return entries
 
-        img_suffixes = ["_top", "_front", "_side", "_iso", "_iso2"]
-        for subdir in sorted(root_path.iterdir()):
-            if not subdir.is_dir():
+        for json_path in sorted(root_path.rglob("*_data.json")):
+            if not json_path.is_file():
                 continue
-            stem = subdir.name
-            imgs = [subdir / f"{stem}{s}.png" for s in img_suffixes]
-            json_path = subdir / f"{stem}_data.json"
-            if all(p.exists() for p in imgs) and json_path.exists():
-                entries.append({"dir": subdir, "stem": stem, "imgs": imgs, "json": json_path})
+            stem = json_path.stem
+            if stem.endswith("_data"):
+                stem = stem[: -len("_data")]
+            base_dir = json_path.parent
+
+            imgs = [
+                base_dir / f"{stem}_top.png",
+                base_dir / f"{stem}_front.png",
+                base_dir / f"{stem}_side.png",
+                base_dir / f"{stem}_iso.png",
+                base_dir / f"{stem}_iso2.png",
+            ]
+            if len(imgs) == 5 and all(p.exists() for p in imgs):
+                entries.append({"dir": base_dir, "stem": stem, "imgs": imgs, "json": json_path})
         return entries
 
     def _load_dataset_images(self) -> List[Image.Image]:
