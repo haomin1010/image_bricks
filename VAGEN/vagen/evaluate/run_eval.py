@@ -7,7 +7,6 @@ import copy
 import json
 import logging
 import os
-import shlex
 
 # --- Proxy Fix: Ensure local addresses bypass proxy for local SGLang
 # Avoid removing global proxy envs (they're needed for remote downloads).
@@ -24,7 +23,6 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from omegaconf import DictConfig, OmegaConf
@@ -34,7 +32,7 @@ from vagen.envs.registry import get_env_cls
 from vagen.evaluate.runner import run_eval_parallel, NORMAL_FINISH_REASONS
 from vagen.evaluate.utils.seeding_utils import generate_seeds_for_spec
 from vagen.evaluate.utils.summary_utils import write_rollouts_summary_from_dump
-_FALLBACK_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "conf", "evaluate.yaml")
+DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "conf", "evaluate.yaml")
 
 
 logger = logging.getLogger("view_suite.run_eval")
@@ -78,27 +76,6 @@ def _resolve_paths_in_config(obj: Any, base_dir: str) -> Any:
     if isinstance(obj, list):
         return [_resolve_paths_in_config(x, base_dir) for x in obj]
     return obj
-
-
-def _count_isaac_dataset_entries(dataset_root: str) -> int:
-    """Count valid Isaac dataset entries under dataset_root (strict subdir layout only)."""
-    root = Path(dataset_root)
-    if not root.exists():
-        return 0
-
-    img_suffixes = ["_top", "_front", "_side", "_iso", "_iso2"]
-
-    # Strict layout: dataset_root/<stem>/<stem>_{top,front,side,iso,iso2}.png + <stem>_data.json
-    subdir_count = 0
-    for subdir in sorted(root.iterdir()):
-        if not subdir.is_dir():
-            continue
-        stem = subdir.name
-        imgs = [subdir / f"{stem}{s}.png" for s in img_suffixes]
-        json_path = subdir / f"{stem}_data.json"
-        if all(p.exists() for p in imgs) and json_path.exists():
-            subdir_count += 1
-    return subdir_count
 
 
 def _parse_env_specs(cfg: Dict[str, Any]) -> List[EnvSpec]:
@@ -291,34 +268,10 @@ def _expand_jobs(
         env_cls = get_env_cls(spec.name)
         resolved_config = _resolve_paths_in_config(copy.deepcopy(spec.config), base_dir)
         seeds = generate_seeds_for_spec(spec, base_seed, spec_idx)
-        n_jobs = int(spec.n_envs)
-
-        # Isaac evaluation runs in strict full-dataset mode.
-        is_isaac_backend = str(resolved_config.get("backend", "")).strip().lower() == "isaac"
-        if is_isaac_backend:
-            dataset_root = resolved_config.get("dataset_root")
-            if not isinstance(dataset_root, str) or not dataset_root:
-                raise ValueError(
-                    f"Env '{spec.name}' (backend=isaac) requires a valid dataset_root."
-                )
-            entry_count = _count_isaac_dataset_entries(dataset_root)
-            if entry_count <= 0:
-                raise ValueError(
-                    f"Env '{spec.name}' (backend=isaac) found no valid dataset entries under: {dataset_root}"
-                )
-            n_jobs = int(entry_count)
-            seeds = list(range(entry_count))
-            logger.info(
-                "Expanded env '%s' to strict full-dataset mode: dataset_root=%s entries=%d seeds=[0..%d]",
-                spec.name,
-                dataset_root,
-                entry_count,
-                max(0, entry_count - 1),
-            )
         job_max_turns = int(spec.max_turns if spec.max_turns is not None else default_max_turns or 10)
         env_chat_cfg = spec.chat_config or {}
 
-        for i in range(n_jobs):
+        for i in range(spec.n_envs):
             seed = seeds[i]
             job_config = copy.deepcopy(resolved_config)
             chat_cfg = copy.deepcopy(env_chat_cfg)
@@ -355,24 +308,6 @@ def _load_config(cfg_path: str, overrides: List[str]) -> DictConfig:
     return cfg
 
 
-def _resolve_sglang_log_path(cfg: Dict[str, Any], base_dir: str) -> str:
-    env_path = (os.environ.get("VAGEN_SGLANG_LOG") or "").strip()
-    if env_path:
-        log_path = os.path.expandvars(env_path)
-        if not os.path.isabs(log_path):
-            log_path = os.path.abspath(os.path.join(base_dir, log_path))
-        return log_path
-
-    fileroot = cfg.get("fileroot")
-    if isinstance(fileroot, str) and fileroot.strip():
-        resolved_fileroot = os.path.expandvars(fileroot.strip())
-        if not os.path.isabs(resolved_fileroot):
-            resolved_fileroot = os.path.abspath(os.path.join(base_dir, resolved_fileroot))
-        return os.path.join(resolved_fileroot, "outputs", "sglang_server.log")
-
-    return "/tmp/sglang_server.log"
-
-
 def main() -> None:
     # --- Ray and Isaac Server Initialization (Mirroring main_ppo.py logic) ---
     import ray
@@ -381,7 +316,7 @@ def main() -> None:
         ray.init(namespace="vagen_training", ignore_reinit_error=True)
 
     args = _parse_args()
-    cfg_path = args.config or os.environ.get("VAGEN_EVAL_CONFIG") or _FALLBACK_CONFIG_PATH
+    cfg_path = args.config or DEFAULT_CONFIG_PATH
     cfg_path = os.path.abspath(cfg_path)
     if not os.path.exists(cfg_path):
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
@@ -414,83 +349,20 @@ def main() -> None:
                 # Start Isaac server in dedicated process
                 server_script = os.path.join(os.path.dirname(__file__), "..", "server", "start_isaac_server.py")
                 server_script = os.path.abspath(server_script)
-                # Allow selecting a different Isaac device without editing code.
-                # Example: DEVICE=cuda:0 (default), DEVICE=cuda:1
-                isaac_device = os.environ.get("DEVICE", "cuda:0")
-
-                def _env_int(name: str, default: int) -> int:
-                    raw = (os.environ.get(name) or "").strip()
-                    if raw == "":
-                        return int(default)
-                    try:
-                        return int(raw)
-                    except Exception:
-                        return int(default)
-
-                def _env_bool(name: str, default: bool = False) -> bool:
-                    raw = (os.environ.get(name) or "").strip().lower()
-                    if raw == "":
-                        return bool(default)
-                    if raw in {"1", "true", "yes", "y", "on"}:
-                        return True
-                    if raw in {"0", "false", "no", "n", "off"}:
-                        return False
-                    return bool(default)
-
-                # Default to headless on servers/SSH sessions that don't have a display.
-                # Can be overridden via ISAAC_HEADLESS=0/1.
-                isaac_headless_env = (os.environ.get("ISAAC_HEADLESS") or "").strip().lower()
-                want_headless = False
-                if isaac_headless_env in {"1", "true", "yes", "y", "on"}:
-                    want_headless = True
-                elif isaac_headless_env in {"0", "false", "no", "n", "off"}:
-                    want_headless = False
-                else:
-                    want_headless = not bool(os.environ.get("DISPLAY"))
-
-                # Choose CUDA_VISIBLE_DEVICES for the Isaac server.
-                # IMPORTANT: The previous hard-coded "7" will break single-GPU machines
-                # by hiding all GPUs from CUDA/Isaac (-> "no CUDA-capable device").
-                isaac_cvd = os.environ.get("ISAAC_CUDA_VISIBLE_DEVICES")
-                if isaac_cvd is None or str(isaac_cvd).strip() == "":
-                    isaac_cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-                if isaac_cvd is None or str(isaac_cvd).strip() == "":
-                    isaac_cvd = "0"
-
-                isaac_num_envs = _env_int("ISAAC_SERVER_NUM_ENVS", 1)
-                isaac_task = (os.environ.get("ISAAC_SERVER_TASK") or "").strip() or "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0"
-                isaac_record = _env_bool("ISAAC_SERVER_RECORD", False)
-                isaac_video_length = _env_int("ISAAC_SERVER_VIDEO_LENGTH", 0)
-                isaac_video_interval = _env_int("ISAAC_SERVER_VIDEO_INTERVAL", 0)
-                isaac_ik_lambda_val = (os.environ.get("ISAAC_SERVER_IK_LAMBDA_VAL") or "").strip()
-                isaac_extra_args = (os.environ.get("ISAAC_SERVER_EXTRA_ARGS") or "").strip()
-                isaac_extra_argv = shlex.split(isaac_extra_args) if isaac_extra_args else []
-
                 cmd = [
                     sys.executable,
                     server_script,
-                    "--num-envs",
-                    str(isaac_num_envs),
-                    "--device", str(isaac_device),
-                    "--task",
-                    str(isaac_task),
+                    "--num-envs", "1",
+                    # TODO:
+                    "--device", "cuda:0",
+                    "--task", "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
+                    "--headless"
                 ]
-                if want_headless:
-                    cmd.append("--headless")
-                if isaac_record:
-                    cmd.append("--record")
-                if isaac_video_length > 0:
-                    cmd.extend(["--video-length", str(isaac_video_length)])
-                if isaac_video_interval > 0:
-                    cmd.extend(["--video-interval", str(isaac_video_interval)])
-                if isaac_ik_lambda_val:
-                    cmd.extend(["--ik-lambda-val", str(isaac_ik_lambda_val)])
-                if isaac_extra_argv:
-                    cmd.extend(isaac_extra_argv)
 
                 env = os.environ.copy()
                 # Server will auto-connect to the same Ray cluster
-                env["CUDA_VISIBLE_DEVICES"] = str(isaac_cvd)
+                # Run Isaac on GPU0 since the machine only has one GPU
+                env["CUDA_VISIBLE_DEVICES"] = "0"
                 
                 print(f">>> Starting Isaac server in foreground (logs will print here): {' '.join(cmd)}")
                 # Start Isaac server as a child process that inherits stdout/stderr
@@ -531,14 +403,9 @@ def main() -> None:
                 if s.connect_ex(('127.0.0.1', int(port))) != 0:
                     print(f">>> SGLang server not detected on port {port}. Starting it...")
                     model_path = backend_cfg.get("model", "Qwen/Qwen2.5-VL-3B-Instruct")
-                    # Select GPUs for SGLang (override with SGLANG_CUDA_VISIBLE_DEVICES).
+                    # Use GPU 0 for SGLang.
                     env = os.environ.copy()
-                    sglang_cvd = os.environ.get("SGLANG_CUDA_VISIBLE_DEVICES")
-                    if sglang_cvd is None or str(sglang_cvd).strip() == "":
-                        sglang_cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-                    if sglang_cvd is None or str(sglang_cvd).strip() == "":
-                        sglang_cvd = "0"
-                    env["CUDA_VISIBLE_DEVICES"] = str(sglang_cvd)
+                    env["CUDA_VISIBLE_DEVICES"] = "0"
 
                     # Determine requested tp from backend_cfg if present, otherwise use number of GPUs.
                     try:
@@ -577,10 +444,8 @@ def main() -> None:
                         "--tp", str(tp_to_use),
                         "--mem-fraction-static", "0.2"
                     ]
-
-                    sglang_log_path = _resolve_sglang_log_path(cfg, base_dir)
-                    os.makedirs(os.path.dirname(sglang_log_path), exist_ok=True)
-                    sglang_log_file = open(sglang_log_path, "a")
+                    
+                    sglang_log_file = open("/tmp/sglang_server.log", "a")
                     sglang_server_process = subprocess.Popen(
                         cmd,
                         env=env,
@@ -605,7 +470,7 @@ def main() -> None:
                             pass
                         time.sleep(1)
                     if not online:
-                        print(f">>> Timeout waiting for SGLang server. Check {sglang_log_path}")
+                        print(">>> Timeout waiting for SGLang server. Check /tmp/sglang_server.log")
                 else:
                     print(f">>> Found existing process on port {port}, assuming it's SGLang.")
     resume_mode = str(run_cfg.get("resume", "skip_completed"))

@@ -9,7 +9,7 @@ envs:
     max_turns: 15
     config:
       backend: isaac
-      dataset_root: ${fileroot}/assets/dataset/output_snapshots/test
+      dataset_root: ${fileroot}/assets/dataset/test
       n_views: 3
       image_size: [224, 224]
       max_steps: 200
@@ -18,7 +18,6 @@ envs:
       floating_placement_penalty: ${oc.env:VAGEN_ISAAC_FLOATING_PLACEMENT_PENALTY,-10.0}
       non_candidate_penalty: ${oc.env:VAGEN_ISAAC_NON_CANDIDATE_PENALTY,-5.0}
       max_attempts_factor: ${oc.env:VAGEN_ISAAC_MAX_ATTEMPTS_FACTOR,1.5}
-      ground_truth_root: ${oc.env:VAGEN_ISAAC_GROUND_TRUTH_ROOT,}
       collapse_mock_after_attempt: ${oc.env:VAGEN_ISAAC_COLLAPSE_MOCK_AFTER_ATTEMPT,-1}
     chat_config:
       temperature: 0

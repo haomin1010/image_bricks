@@ -31,13 +31,6 @@ from .termination_manager import IsaacTerminationConfig, IsaacTerminationManager
 from .utils.utils import parse_response
 
 logger = logging.getLogger(__name__)
-DEFAULT_GROUND_TRUTH_ROOT = str(
-    Path(__file__).resolve().parents[4]
-    / "IsaacLab"
-    / "scripts"
-    / "data_gen"
-    / "convex_json_batch"
-)
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -80,7 +73,6 @@ class IsaacManagedEnvConfig:
 
     # Dataset
     dataset_root: str = "/mnt/data/image_bricks/assets/snapshots"
-    ground_truth_root: str = DEFAULT_GROUND_TRUTH_ROOT
     collapse_mock_after_attempt: int = -1
 
     def __post_init__(self) -> None:
@@ -98,10 +90,7 @@ class IsaacManagedEnvConfig:
         self.floating_placement_penalty = float(self.floating_placement_penalty)
         self.non_candidate_penalty = float(self.non_candidate_penalty)
         self.max_attempts_factor = float(self.max_attempts_factor)
-        if not self.ground_truth_root:
-            self.ground_truth_root = DEFAULT_GROUND_TRUTH_ROOT
         self.collapse_mock_after_attempt = int(self.collapse_mock_after_attempt)
-
 
 _CONFIG_FIELDS = {f.name for f in fields(IsaacManagedEnvConfig)}
 
@@ -153,16 +142,10 @@ class IsaacManagedEnv(GymImageEnv):
 
         # Scan dataset directory and cache valid entries on startup
         self._dataset_entries: List[Dict] = self._scan_dataset(self.config.dataset_root)
-        self._ground_truth_entries: List[Path] = scan_ground_truth_entries(self.config.ground_truth_root)
-        self._ground_truth_by_stem = {path.stem: path for path in self._ground_truth_entries}
         if not self._dataset_entries:
             logger.warning("Dataset is empty or not found at: %s", self.config.dataset_root)
         else:
             logger.info("Loaded %d dataset entries from %s", len(self._dataset_entries), self.config.dataset_root)
-        if not self._ground_truth_entries:
-            logger.warning("Ground truth JSONs are empty or not found at: %s", self.config.ground_truth_root)
-        else:
-            logger.info("Loaded %d ground truth JSON files from %s", len(self._ground_truth_entries), self.config.ground_truth_root)
 
     async def _get_server(self):
         """Lazily obtain the per-worker server handle singleton."""
@@ -539,12 +522,7 @@ class IsaacManagedEnv(GymImageEnv):
     def _select_ground_truth_path(self, seed: int) -> Optional[Path]:
         if self._dataset_entries:
             entry = self._dataset_entries[seed % len(self._dataset_entries)]
-            matched = self._ground_truth_by_stem.get(entry["stem"])
-            if matched is not None:
-                return matched
-
-        if self._ground_truth_entries:
-            return self._ground_truth_entries[seed % len(self._ground_truth_entries)]
+            return entry.get("json")
         return None
 
     def _load_current_task_spec(self) -> TaskSpec:
