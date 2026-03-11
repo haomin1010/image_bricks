@@ -472,7 +472,7 @@ def main():
 
 
     print(f"[INFO]: Finished processing {FILE_ID}. Closing application...")
-    simulation_app.close()
+    # simulation_app.close()
 
     os._exit(0)
 if __name__ == "__main__":
