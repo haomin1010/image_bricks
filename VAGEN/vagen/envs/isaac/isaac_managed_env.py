@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import ray
 import asyncio
+import math
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,7 +28,6 @@ from .utils.prompt import (
 )
 from .reward_manager import IsaacRewardConfig, IsaacRewardManager, PlacementRewardResult
 from .task_spec import BrickPosition, TaskSpec, load_task_spec, scan_ground_truth_entries
-from .termination_manager import IsaacTerminationConfig, IsaacTerminationManager, TerminationStatus
 from .utils.utils import parse_response
 
 logger = logging.getLogger(__name__)
@@ -133,12 +133,6 @@ class IsaacManagedEnv(GymImageEnv):
             non_candidate_penalty=self.config.non_candidate_penalty,
         )
         self.reward_manager = IsaacRewardManager(reward_config)
-        self.termination_manager = IsaacTerminationManager(
-            IsaacTerminationConfig(
-                max_attempts_factor=self.config.max_attempts_factor,
-                collapse_mock_after_attempt=self.config.collapse_mock_after_attempt,
-            )
-        )
 
         # Scan dataset directory and cache valid entries on startup
         self._dataset_entries: List[Dict] = self._scan_dataset(self.config.dataset_root)
@@ -219,12 +213,12 @@ class IsaacManagedEnv(GymImageEnv):
         self._latest_scene_images = list(all_images)
 
         self.reward_manager.reset(self._current_task_spec)
-        self.termination_manager.reset(self._current_task_spec)
+        max_attempts = self._compute_max_attempts()
 
         # Build target description from dataset JSON
         target_desc = target_description(
             self._current_task_spec,
-            max_attempts=self.termination_manager.max_attempts,
+            max_attempts=max_attempts,
         )
         env_info["target_description"] = target_desc
 
@@ -234,7 +228,7 @@ class IsaacManagedEnv(GymImageEnv):
             seed % max(len(self._dataset_entries), 1),
             self._current_ground_truth_path.name if self._current_ground_truth_path else "none",
             len(all_images),
-            self.termination_manager.max_attempts,
+            max_attempts,
             requested_num_tasks,
         )
 
@@ -279,10 +273,9 @@ class IsaacManagedEnv(GymImageEnv):
         reward += self.reward_manager.format_reward(format_correct)
 
         placement_result: Optional[PlacementRewardResult] = None
-        termination_status: Optional[TerminationStatus] = None
         isaac_info: Dict[str, Any] = {}
-        external_done = False
         query_cameras = parsed.get("query_cameras")
+        term_reason: Optional[str] = None
 
         metrics = {
             "turn_metrics": {
@@ -308,30 +301,26 @@ class IsaacManagedEnv(GymImageEnv):
                     server.remote_step.remote(self._sub_env_id, goal), timeout=300.0
                 )
                 isaac_info = dict(step_response.get("info", {}) or {})
-                external_done = bool(step_response.get("done", False))
+                done = bool(step_response.get("done", False))
             except Exception as e:
                 logger.error("Failed to step Isaac (timeout or crash): %s", e)
                 isaac_info = {"timeout": True}
-                external_done = True
+                done = True
 
             placement_result = self.reward_manager.evaluate_placement(BrickPosition.from_mapping(goal))
             reward += placement_result.reward_delta
-            termination_status = self.termination_manager.evaluate(
-                placement_attempted=True,
-                submit_requested=False,
-                isaac_info=isaac_info,
-                task_completed=self.reward_manager.task_completed,
-                external_done=external_done,
-            )
+            term_reason = isaac_info.get("termination_reason")
+            if done and term_reason is None:
+                term_reason = "isaac_done"
 
             isaac_images = await self._render_env_images()
-            obs_text = self._build_placement_obs_text(coordinate, placement_result, termination_status)
-
-            done = termination_status.done
+            obs_text = self._build_placement_obs_text(coordinate, placement_result, done, term_reason)
             metrics["turn_metrics"]["action_is_effective"] = True
-            metrics["traj_metrics"]["task_completed"] = termination_status.task_completed
-            metrics["traj_metrics"]["collapse_detected"] = termination_status.collapsed
-            metrics["traj_metrics"]["termination_reason"] = termination_status.reason
+            metrics["traj_metrics"]["task_completed"] = bool(isaac_info.get("success", False))
+            metrics["traj_metrics"]["collapse_detected"] = (
+                isaac_info.get("termination_reason") == "collapse"
+            )
+            metrics["traj_metrics"]["termination_reason"] = term_reason
 
             obs = self._make_multi_image_obs(obs_text, isaac_images, action_str=action_str)
             info.update(
@@ -353,29 +342,25 @@ class IsaacManagedEnv(GymImageEnv):
                     server.remote_step.remote(self._sub_env_id, goal), timeout=300.0
                 )
                 isaac_info = dict(step_response.get("info", {}) or {})
-                external_done = bool(step_response.get("done", False))
+                done = bool(step_response.get("done", False))
             except Exception as e:
                 logger.error("Failed to submit Isaac (timeout or crash): %s", e)
                 isaac_info = {"timeout": True}
-                external_done = True
-
-            termination_status = self.termination_manager.evaluate(
-                placement_attempted=False,
-                submit_requested=True,
-                isaac_info=isaac_info,
-                task_completed=self.reward_manager.task_completed,
-                external_done=external_done,
-            )
+                done = True
+            term_reason = isaac_info.get("termination_reason")
+            if term_reason is None:
+                term_reason = "submit"
 
             isaac_images = await self._render_env_images()
-            obs_text = self._build_submit_obs_text(termination_status)
+            obs_text = self._build_submit_obs_text(bool(isaac_info.get("success", False)))
 
-            done = termination_status.done
             metrics["turn_metrics"]["action_is_effective"] = True
-            metrics["traj_metrics"]["success"] = termination_status.success
-            metrics["traj_metrics"]["task_completed"] = termination_status.task_completed
-            metrics["traj_metrics"]["collapse_detected"] = termination_status.collapsed
-            metrics["traj_metrics"]["termination_reason"] = termination_status.reason
+            metrics["traj_metrics"]["success"] = bool(isaac_info.get("success", False))
+            metrics["traj_metrics"]["task_completed"] = bool(isaac_info.get("success", False))
+            metrics["traj_metrics"]["collapse_detected"] = (
+                isaac_info.get("termination_reason") == "collapse"
+            )
+            metrics["traj_metrics"]["termination_reason"] = term_reason
 
             obs = self._make_multi_image_obs(obs_text, isaac_images, action_str=action_str)
             info.update({"timeout": bool(isaac_info.get("timeout", False))})
@@ -423,49 +408,28 @@ class IsaacManagedEnv(GymImageEnv):
         # Step limit
         if self.steps_taken >= self.config.max_steps and not done:
             done = True
-            if termination_status is None:
-                termination_status = self.termination_manager.evaluate(
-                    placement_attempted=False,
-                    submit_requested=False,
-                    isaac_info=isaac_info,
-                    task_completed=self.reward_manager.task_completed,
-                    external_done=False,
-                )
-            termination_status = TerminationStatus(
-                done=True,
-                reason="max_steps_guard",
-                success=False,
-                collapsed=termination_status.collapsed,
-                submitted=termination_status.submitted,
-                reached_max_attempts=termination_status.reached_max_attempts,
-                task_completed=termination_status.task_completed,
-                placement_attempts=termination_status.placement_attempts,
-                max_attempts=termination_status.max_attempts,
-            )
-            metrics["traj_metrics"]["termination_reason"] = termination_status.reason
+            term_reason = "max_steps_guard"
+            metrics["traj_metrics"]["termination_reason"] = term_reason
 
-        if termination_status is None:
-            termination_status = self.termination_manager.evaluate(
-                placement_attempted=False,
-                submit_requested=False,
-                isaac_info=isaac_info,
-                task_completed=self.reward_manager.task_completed,
-                external_done=False,
-            )
+        if term_reason is None:
+            term_reason = isaac_info.get("termination_reason")
+            if done and term_reason is None:
+                term_reason = "isaac_done"
 
-        metrics["traj_metrics"]["success"] = termination_status.success
-        metrics["traj_metrics"]["task_completed"] = termination_status.task_completed
-        metrics["traj_metrics"]["collapse_detected"] = termination_status.collapsed
-        metrics["traj_metrics"]["termination_reason"] = termination_status.reason
+        success = bool(isaac_info.get("success", False))
+        metrics["traj_metrics"]["success"] = success
+        metrics["traj_metrics"]["task_completed"] = success
+        metrics["traj_metrics"]["collapse_detected"] = (
+            isaac_info.get("termination_reason") == "collapse"
+        )
+        metrics["traj_metrics"]["termination_reason"] = term_reason
         info["metrics"] = metrics
-        info["success"] = termination_status.success
+        info["success"] = success
         info["termination"] = {
-            "reason": termination_status.reason,
-            "collapsed": termination_status.collapsed,
-            "submitted": termination_status.submitted,
-            "task_completed": termination_status.task_completed,
-            "placement_attempts": termination_status.placement_attempts,
-            "max_attempts": termination_status.max_attempts,
+            "reason": term_reason,
+            "collapsed": bool(isaac_info.get("termination_reason") == "collapse"),
+            "submitted": bool(is_submit),
+            "task_completed": success,
         }
         info["reward_breakdown"] = {
             "format_reward": self.reward_manager.format_reward(format_correct),
@@ -487,8 +451,7 @@ class IsaacManagedEnv(GymImageEnv):
                 "raw_action": parsed.get("action_content", ""),
                 "thought": parsed.get("think_content", ""),
                 "placement_outcome": None if placement_result is None else placement_result.outcome,
-                "termination_reason": termination_status.reason,
-                "placement_attempts": termination_status.placement_attempts,
+                "termination_reason": term_reason,
                 "total_reward": self.total_reward,
             }
         )
@@ -518,6 +481,17 @@ class IsaacManagedEnv(GymImageEnv):
         if self.config.correct_placement_reward is not None:
             return float(self.config.correct_placement_reward)
         return float(self.config.success_reward)
+
+    def _compute_max_attempts(self) -> int:
+        return max(
+            1,
+            int(
+                math.ceil(
+                    max(1, int(self._current_task_spec.total_blocks))
+                    * float(self.config.max_attempts_factor)
+                )
+            ),
+        )
 
     def _select_ground_truth_path(self, seed: int) -> Optional[Path]:
         if self._dataset_entries:
@@ -566,7 +540,8 @@ class IsaacManagedEnv(GymImageEnv):
         self,
         coordinate: Dict[str, int],
         placement_result: PlacementRewardResult,
-        termination_status: TerminationStatus,
+        done: bool,
+        term_reason: Optional[str],
     ) -> str:
         cam_labels = ["Top", "Front", "Side", "Iso", "Iso2"]
         label_lines = [
@@ -576,17 +551,17 @@ class IsaacManagedEnv(GymImageEnv):
         status_lines = [
             f"[System]: Block placed at ({coordinate['x']}, {coordinate['y']}, {coordinate['z']}).",
             f"Rule check: {placement_result.feedback}",
-            f"Placement attempts: {termination_status.placement_attempts}/{termination_status.max_attempts}.",
+            f"Placement attempts limit: {self._compute_max_attempts()}.",
         ]
-        if termination_status.done and termination_status.reason is not None:
-            status_lines.append(f"Episode status: terminated by {termination_status.reason}.")
-        elif termination_status.task_completed:
+        if done and term_reason is not None:
+            status_lines.append(f"Episode status: terminated by {term_reason}.")
+        elif self.reward_manager.task_completed:
             status_lines.append("The current structure already matches the target. Submit when you are ready.")
         status_lines.extend(label_lines)
         status_lines.append("Place the next cube or submit when done.")
         return "\n".join(status_lines)
 
-    def _build_submit_obs_text(self, termination_status: TerminationStatus) -> str:
+    def _build_submit_obs_text(self, success: bool) -> str:
         cam_labels = ["Top", "Front", "Side", "Iso", "Iso2"]
         label_lines = [
             f"{cam_labels[i] if i < len(cam_labels) else f'Cam{i}'}: {self.config.image_placeholder}"
@@ -594,12 +569,12 @@ class IsaacManagedEnv(GymImageEnv):
         ]
         verdict = (
             "Submission accepted: the current structure matches the target."
-            if termination_status.success
+            if success
             else "Submission finished the episode, but the current structure does not match the target."
         )
         lines = [
             f"[System]: {verdict}",
-            f"Placement attempts: {termination_status.placement_attempts}/{termination_status.max_attempts}.",
+            f"Placement attempts limit: {self._compute_max_attempts()}.",
             *label_lines,
         ]
         return "\n".join(lines)

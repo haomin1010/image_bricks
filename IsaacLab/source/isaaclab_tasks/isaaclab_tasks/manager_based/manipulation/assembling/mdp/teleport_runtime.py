@@ -14,6 +14,12 @@ class TeleportRuntime:
     """Server runtime that teleports cubes to goals instead of using robot actions."""
 
     IDLE = -2
+    TERM_REASON_NONE = 0
+    TERM_REASON_SUBMIT = 1
+    TERM_REASON_MAX_ATTEMPTS = 2
+    TERM_REASON_TELEPORT_FAILED = 3
+    TERM_REASON_ISAAC_DONE = 4
+    TERM_REASON_REPEAT_COORDINATE = 5
 
     def __init__(
         self,
@@ -39,8 +45,20 @@ class TeleportRuntime:
         self.num_tasks_per_env = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.new_task_available = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.new_task_index = torch.full((self.num_envs,), -1, dtype=torch.long, device=self.device)
+        self.done_signal = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.success_signal = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.timeout_signal = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.termination_reason_code = torch.full(
+            (self.num_envs,),
+            int(self.TERM_REASON_NONE),
+            dtype=torch.long,
+            device=self.device,
+        )
         self._pending_step_events: dict[int, dict[str, bool | int]] = {}
         self._collision_enabled_cubes: set[tuple[int, str]] = set()
+        self._seen_goal_xyz: dict[int, set[tuple[int, int, int]]] = {
+            env_id: set() for env_id in range(self.num_envs)
+        }
         self._task_limit_per_env = torch.full(
             (self.num_envs,),
             max(1, min(self.max_tasks, max(1, len(self.cube_names)))),
@@ -68,9 +86,18 @@ class TeleportRuntime:
     def bind_shared_state(self) -> None:
         self.env.unwrapped._vagen_new_task_available = self.new_task_available
         self.env.unwrapped._vagen_new_task_index = self.new_task_index
+        self.env.unwrapped._vagen_task_index = self.task_index
+        self.env.unwrapped._vagen_num_tasks_per_env = self.num_tasks_per_env
+        self.env.unwrapped._vagen_task_limit_per_env = self._task_limit_per_env
+        self.env.unwrapped._vagen_done_signal = self.done_signal
+        self.env.unwrapped._vagen_success_signal = self.success_signal
+        self.env.unwrapped._vagen_timeout_signal = self.timeout_signal
+        self.env.unwrapped._vagen_termination_reason_code = self.termination_reason_code
 
     def reset_tracking(self, env_id: int) -> None:
-        self._pending_step_events.pop(int(env_id), None)
+        env_id_i = int(env_id)
+        self._pending_step_events.pop(env_id_i, None)
+        self._seen_goal_xyz[env_id_i] = set()
 
     def on_reset_env(self, env_id: int) -> None:
         env_id_i = int(env_id)
@@ -79,6 +106,10 @@ class TeleportRuntime:
         self.num_tasks_per_env[env_id_i] = 0
         self.new_task_available[env_id_i] = False
         self.new_task_index[env_id_i] = -1
+        self.done_signal[env_id_i] = False
+        self.success_signal[env_id_i] = False
+        self.timeout_signal[env_id_i] = False
+        self.termination_reason_code[env_id_i] = int(self.TERM_REASON_NONE)
         self.reset_tracking(env_id_i)
 
     def set_env_task_limit(self, env_id: int, requested_num_tasks: int) -> None:
@@ -200,19 +231,46 @@ class TeleportRuntime:
                 f"(env_id={int(env_id)}): {exc}"
             )
 
-    def _queue_step_event(self, env_id: int, *, done: bool, success: bool, timeout: bool) -> None:
+    def _queue_step_event(
+        self,
+        env_id: int,
+        *,
+        done: bool,
+        success: bool,
+        timeout: bool,
+        reason: str | None = None,
+    ) -> None:
         env_id_i = int(env_id)
         snapshot = self.get_step_snapshot(env_id_i)
         self._pending_step_events[env_id_i] = {
             "done": bool(done),
             "success": bool(success),
             "timeout": bool(timeout),
+            "reason": reason,
             "new_task_available": bool(snapshot["new_task_available"]),
             "new_task_index": int(snapshot["new_task_index"]),
             "task_index": int(snapshot["task_index"]),
             "state": int(snapshot["state"]),
             "num_tasks": int(snapshot["num_tasks"]),
         }
+        self.done_signal[env_id_i] = bool(done)
+        self.success_signal[env_id_i] = bool(success)
+        self.timeout_signal[env_id_i] = bool(timeout)
+        self.termination_reason_code[env_id_i] = int(self._reason_to_code(reason))
+
+    @staticmethod
+    def _reason_to_code(reason: str | None) -> int:
+        if reason == "submit":
+            return int(TeleportRuntime.TERM_REASON_SUBMIT)
+        if reason == "max_attempts":
+            return int(TeleportRuntime.TERM_REASON_MAX_ATTEMPTS)
+        if reason == "teleport_failed":
+            return int(TeleportRuntime.TERM_REASON_TELEPORT_FAILED)
+        if reason == "isaac_done":
+            return int(TeleportRuntime.TERM_REASON_ISAAC_DONE)
+        if reason == "repeat_coordinate":
+            return int(TeleportRuntime.TERM_REASON_REPEAT_COORDINATE)
+        return int(TeleportRuntime.TERM_REASON_NONE)
 
     def handle_step_goal(self, env_id: int, goal) -> dict:
         env_id_i = int(env_id)
@@ -224,14 +282,45 @@ class TeleportRuntime:
             is_success = num_tasks > 0 and current_task_idx >= num_tasks
             self.new_task_available[env_id_i] = False
             self.new_task_index[env_id_i] = -1
-            self._queue_step_event(env_id_i, done=True, success=bool(is_success), timeout=False)
+            self._queue_step_event(
+                env_id_i,
+                done=True,
+                success=bool(is_success),
+                timeout=False,
+                reason="submit",
+            )
             return {"immediate_done": False, "done_payload": None}
+
+        if isinstance(goal, dict) and all(k in goal for k in ("x", "y", "z")):
+            current_goal_xyz = (
+                int(goal["x"]),
+                int(goal["y"]),
+                int(goal["z"]),
+            )
+            if current_goal_xyz in self._seen_goal_xyz[env_id_i]:
+                self.new_task_available[env_id_i] = False
+                self.new_task_index[env_id_i] = -1
+                self._queue_step_event(
+                    env_id_i,
+                    done=True,
+                    success=False,
+                    timeout=True,
+                    reason="repeat_coordinate",
+                )
+                return {"immediate_done": False, "done_payload": None}
+            self._seen_goal_xyz[env_id_i].add(current_goal_xyz)
 
         env_task_limit = int(self._task_limit_per_env[env_id_i].item())
         if current_task_idx >= env_task_limit:
             self.new_task_available[env_id_i] = False
             self.new_task_index[env_id_i] = -1
-            self._queue_step_event(env_id_i, done=True, success=False, timeout=True)
+            self._queue_step_event(
+                env_id_i,
+                done=True,
+                success=False,
+                timeout=True,
+                reason="max_attempts",
+            )
             return {"immediate_done": False, "done_payload": None}
 
         target_pos_w = self._parse_goal_to_world(env_id_i, goal)
@@ -240,14 +329,26 @@ class TeleportRuntime:
         if not teleported:
             self.new_task_available[env_id_i] = False
             self.new_task_index[env_id_i] = -1
-            self._queue_step_event(env_id_i, done=True, success=False, timeout=True)
+            self._queue_step_event(
+                env_id_i,
+                done=True,
+                success=False,
+                timeout=True,
+                reason="teleport_failed",
+            )
             return {"immediate_done": False, "done_payload": None}
 
         self.num_tasks_per_env[env_id_i] = max(int(self.num_tasks_per_env[env_id_i].item()), current_task_idx + 1)
         self.task_index[env_id_i] = current_task_idx + 1
         self.new_task_available[env_id_i] = False
         self.new_task_index[env_id_i] = -1
-        self._queue_step_event(env_id_i, done=False, success=False, timeout=False)
+        self._queue_step_event(
+            env_id_i,
+            done=False,
+            success=False,
+            timeout=False,
+            reason=None,
+        )
         return {"immediate_done": False, "done_payload": None}
 
     def collect_completed_step_events(self) -> list[dict[str, int | bool]]:

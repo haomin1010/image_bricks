@@ -13,6 +13,7 @@ from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
@@ -258,8 +259,14 @@ class ObservationsCfg:
 
 @configclass
 class TerminationsCfg:
-    """Termination placeholder; concrete tasks add terms later."""
-    pass
+    """Termination terms consumed from runtime-side packaged signals."""
+
+    server_done = DoneTerm(func=mdp.server_done)
+    done_submit = DoneTerm(func=mdp.done_submit)
+    done_max_attempts = DoneTerm(func=mdp.done_max_attempts)
+    done_teleport_failed = DoneTerm(func=mdp.done_teleport_failed)
+    done_isaac_done = DoneTerm(func=mdp.done_isaac_done)
+    done_repeat_coordinate = DoneTerm(func=mdp.done_repeat_coordinate)
 
 
 @configclass

@@ -7,7 +7,7 @@ from typing import Any
 
 from ..reward_manager import PlacementRewardResult
 from ..task_spec import BrickPosition
-from ..termination_manager import TerminationStatus
+from isaaclab_tasks.manager_based.manipulation.assembling.termination_manager import TerminationStatus
 
 logger = logging.getLogger(__name__)
 
