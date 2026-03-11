@@ -136,8 +136,8 @@ class SnapshotSceneCfg(InteractiveSceneCfg):
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table.usd",
         ),
         init_state=AssetBaseCfg.InitialStateCfg(
-            pos=(0.0, -0.1, TABLE_HEIGHT), 
-            rot=(1.0, 0.0, 0.0, 0.0), 
+            pos=(0.0, 0.0, TABLE_HEIGHT), 
+            rot=(0.707, 0, 0, 0.707), 
         ),
     )
 

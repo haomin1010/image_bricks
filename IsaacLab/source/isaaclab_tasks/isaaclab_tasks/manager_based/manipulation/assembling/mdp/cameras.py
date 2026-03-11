@@ -23,11 +23,19 @@ _LEGACY_CAMERA_NAMES = ("table_cam", "table_high_cam", "robot_cam", "cam_default
 def _stack_camera_layout(cube_size: float) -> dict[str, dict[str, tuple[float, ...]]]:
     table_height = 1.03
     camera_height = 0.7
+    cube_size = float(cube_size)
+    
     return {
-        "camera": {"pos": (0.0, 0.0, table_height + camera_height + 0.5), "rot": (0.707, 0.0, 0.707, 0.0)},
-        "camera_front": {"pos": (camera_height, 0.0, table_height + cube_size * 2), "rot": (0.0, 0.0, 0.0, 1.0)},
+        "camera": {
+            "pos": (0.0, 0.0, table_height + camera_height), 
+            "rot": (0.707, 0.0, 0.707, 0.0)
+        },
+        "camera_front": {
+            "pos": (camera_height, 0.0, table_height + cube_size * 4), 
+            "rot": (0.0, 0.0, 0.0, 1.0)
+        },
         "camera_side": {
-            "pos": (0.0, camera_height, table_height + cube_size * 2),
+            "pos": (0.0, camera_height, table_height + cube_size * 4),
             "rot": (0.707, 0.0, 0.0, -0.707),
         },
         "camera_iso": {
@@ -145,4 +153,29 @@ def camera_image(
             images = (images + 1.0) * 0.5
 
     return images.clone()
+
+
+def setup_orthographic_cameras_event(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+) -> None:
+    """Force specified cameras to use orthographic projection via USD APIs."""
+    from pxr import UsdGeom
+
+    if not hasattr(env, "sim") or not hasattr(env.sim, "stage"):
+        return
+
+    sim = env.sim
+    num_envs = env.num_envs
+    ortho_cameras = ["camera", "camera_front", "camera_side"]
+
+    for env_idx in range(num_envs):
+        for cam_name in ortho_cameras:
+            cam_path = f"/World/envs/env_{env_idx}/{cam_name}"
+            prim = sim.stage.GetPrimAtPath(cam_path)
+            if prim.IsValid():
+                cam_prim = UsdGeom.Camera(prim)
+                cam_prim.GetProjectionAttr().Set(UsdGeom.Tokens.orthographic)
+                cam_prim.GetHorizontalApertureAttr().Set(4.2)
+                cam_prim.GetVerticalApertureAttr().Set(4.2)
 

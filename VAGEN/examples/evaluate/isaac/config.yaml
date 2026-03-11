@@ -12,7 +12,7 @@ envs:
       dataset_root: ${fileroot}/assets/dataset/small_size4
       n_views: 3
       image_size: [224, 224]
-      max_steps: 200era
+      max_steps: 200
       format_reward: ${oc.env:VAGEN_ISAAC_FORMAT_REWARD,0.1}
       correct_placement_reward: ${oc.env:VAGEN_ISAAC_CORRECT_PLACEMENT_REWARD,1.0}
       floating_placement_penalty: ${oc.env:VAGEN_ISAAC_FLOATING_PLACEMENT_PENALTY,-10.0}

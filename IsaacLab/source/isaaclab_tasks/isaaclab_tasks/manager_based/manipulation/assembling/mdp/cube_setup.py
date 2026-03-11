@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import copy
 import math
 
@@ -13,7 +14,7 @@ from isaaclab.assets import RigidObjectCfg
 from isaaclab.sim.schemas.schemas_cfg import CollisionPropertiesCfg, MassPropertiesCfg, RigidBodyPropertiesCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 
-DEFAULT_CUBE_SIZE = 0.0203 * 2.0
+DEFAULT_CUBE_SIZE = 0.05
 
 
 def build_default_cube_spawn_settings(
@@ -179,10 +180,10 @@ def configure_server_cube_layout(
     collision_enabled: bool | None = None,
 ) -> list[str]:
     _, grid_size, _, _ = scene_cfg.get_grid_spec()
-    blue_usd = scene_cfg.resolve_asset_path(
-        local_rel="Props/Blocks/blue_block.usd",
-        nucleus_rel="Props/Blocks/blue_block.usd",
-    )
+    blue_usd = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), 
+        "../../../../../../../../assets/dataset_v2/bordered_blue_block.usda"
+    ))
     template_cube_cfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Cube_1",
         init_state=RigidObjectCfg.InitialStateCfg(pos=[0.0, 0.0, -10.0], rot=[1.0, 0.0, 0.0, 0.0]),
