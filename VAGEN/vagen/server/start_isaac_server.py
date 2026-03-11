@@ -108,11 +108,13 @@ class IsaacEnvServerProxy:
         timeout_bool = bool(ret.get("timeout", False))
         new_task_av = bool(ret.get("new_task_available", False))
         new_task_idx = int(ret.get("new_task_index", -1))
+        termination_reason = ret.get("reason")
 
         info = {
             "success": success_bool,
             "timeout": timeout_bool,
             "env_id": env_id,
+            "termination_reason": termination_reason,
             "new_task_available": new_task_av,
             "new_task_index": new_task_idx,
         }
@@ -133,7 +135,16 @@ class IsaacEnvServerProxy:
         """Render current state of a specific environment slot."""
         return self.latest_images.get(env_id, [])
     
-    async def _set_step_done(self, env_id, done, success=None, timeout=False, new_task_available=False, new_task_index=-1):
+    async def _set_step_done(
+        self,
+        env_id,
+        done,
+        success=None,
+        timeout=False,
+        new_task_available=False,
+        new_task_index=-1,
+        reason=None,
+    ):
         """Mark a step done for a trainer waiting on env_id.
 
         This async method stores the payload and notifies the condition
@@ -145,6 +156,7 @@ class IsaacEnvServerProxy:
             "done": bool(done),
             "success": bool(success),
             "timeout": bool(timeout),
+            "reason": None if reason is None else str(reason),
             "new_task_available": bool(new_task_available),
             "new_task_index": int(new_task_index),
         }
@@ -445,6 +457,7 @@ def main():
                     timeout=bool(done_event["timeout"]),
                     new_task_available=bool(done_event["new_task_available"]),
                     new_task_index=int(done_event["new_task_index"]),
+                    reason=done_event.get("reason"),
                 )
                 print(
                     f"Marked step done for env {env_id} "
@@ -490,6 +503,7 @@ def main():
                             timeout=payload["timeout"],
                             new_task_available=payload["new_task_available"],
                             new_task_index=payload["new_task_index"],
+                            reason=payload.get("reason"),
                         )
                         continue
             

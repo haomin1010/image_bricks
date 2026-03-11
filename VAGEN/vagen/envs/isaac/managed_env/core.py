@@ -22,7 +22,10 @@ from PIL import Image
 from ...gym_image_env import GymImageEnv
 from ..reward_manager import IsaacRewardConfig, IsaacRewardManager
 from ..task_spec import TaskSpec
-from ..termination_manager import IsaacTerminationConfig, IsaacTerminationManager
+from isaaclab_tasks.manager_based.manipulation.assembling.termination_manager import (
+    IsaacTerminationConfig,
+    IsaacTerminationManager,
+)
 from ..utils.utils import parse_response
 from .actions import IsaacManagedEnvActionMixin, build_step_metrics
 from .config import CONFIG_FIELDS, IsaacManagedEnvConfig

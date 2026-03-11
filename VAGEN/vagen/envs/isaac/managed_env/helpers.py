@@ -10,7 +10,7 @@ from PIL import Image
 
 from ..reward_manager import PlacementRewardResult
 from ..task_spec import TaskSpec, load_task_spec, scan_ground_truth_entries
-from ..termination_manager import TerminationStatus
+from isaaclab_tasks.manager_based.manipulation.assembling.termination_manager import TerminationStatus
 from ..utils.prompt import action_template, format_prompt, init_observation_template, system_prompt
 
 logger = logging.getLogger(__name__)

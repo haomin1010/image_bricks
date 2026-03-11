@@ -9,7 +9,7 @@ envs:
     max_turns: 15
     config:
       backend: isaac
-      dataset_root: ${fileroot}/assets/dataset/output_snapshots/test
+      dataset_root: ${fileroot}/assets/dataset/test
       eval_all_dataset_entries: true
       n_views: 5
       image_size: [224, 224]
@@ -25,6 +25,9 @@ envs:
       temperature: 0
       max_tokens: 64
       top_p: 1.0
+      extra_body:
+        enable_thinking: ${oc.decode:${oc.env:VAGEN_ENABLE_THINKING,0}}
+        thinking_budget: ${oc.decode:${oc.env:VAGEN_THINKING_BUDGET,2048}}
 
 experiment:
   dump_dir: ${fileroot}/outputs/eval_isaac

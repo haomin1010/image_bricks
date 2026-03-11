@@ -7,6 +7,7 @@ import copy
 import json
 import logging
 import os
+import shlex
 
 # --- Proxy Fix: Ensure local addresses bypass proxy for local SGLang
 # Avoid removing global proxy envs (they're needed for remote downloads).
@@ -23,6 +24,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from omegaconf import DictConfig, OmegaConf
@@ -76,6 +78,34 @@ def _resolve_paths_in_config(obj: Any, base_dir: str) -> Any:
     if isinstance(obj, list):
         return [_resolve_paths_in_config(x, base_dir) for x in obj]
     return obj
+
+
+def _scan_isaac_dataset_entries(dataset_root: str) -> List[Dict[str, Any]]:
+    """Recursively scan Isaac dataset entries in strict new format."""
+    root = Path(dataset_root)
+    img_views = ("top", "front", "side", "iso", "iso2")
+    entries: List[Dict[str, Any]] = []
+
+    for json_path in sorted(root.rglob("*_data.json")):
+        stem = json_path.stem
+        stem = stem[: -len("_data")]
+        base_dir = json_path.parent
+
+        imgs = [base_dir / f"{stem}_{view}.png" for view in img_views]
+
+        with json_path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+        total_blocks = int(payload.get("total_blocks", 1) or 1)
+
+        entries.append(
+            {
+                "stem": stem,
+                "json_path": str(json_path),
+                "imgs": [str(p) for p in imgs],
+                "total_blocks": max(1, int(total_blocks)),
+            }
+        )
+    return entries
 
 
 def _parse_env_specs(cfg: Dict[str, Any]) -> List[EnvSpec]:
@@ -268,13 +298,35 @@ def _expand_jobs(
         env_cls = get_env_cls(spec.name)
         resolved_config = _resolve_paths_in_config(copy.deepcopy(spec.config), base_dir)
         seeds = generate_seeds_for_spec(spec, base_seed, spec_idx)
-        job_max_turns = int(spec.max_turns if spec.max_turns is not None else default_max_turns or 10)
-        env_chat_cfg = spec.chat_config or {}
+        base_max_turns = int(spec.max_turns if spec.max_turns is not None else default_max_turns or 10)
+        n_jobs = int(spec.n_envs)
+        is_isaac_backend = str(resolved_config.get("backend", "")).strip().lower() == "isaac"
+        dataset_entries: List[Dict[str, Any]] = []
 
-        for i in range(spec.n_envs):
+        if is_isaac_backend and resolved_config.get("eval_all_dataset_entries", True):
+            dataset_root = resolved_config["dataset_root"]
+            dataset_entries = _scan_isaac_dataset_entries(dataset_root)
+            n_jobs = len(dataset_entries)
+            seeds = list(range(n_jobs))
+            logger.info(
+                "Expanded env '%s' to full-dataset mode: dataset_root=%s entries=%d seeds=[0..%d]",
+                spec.name,
+                dataset_root,
+                n_jobs,
+                max(0, n_jobs - 1),
+            )
+        env_chat_cfg = spec.chat_config or {}
+        max_attempts_factor = float(resolved_config.get("max_attempts_factor", 1.5))
+
+        for i in range(n_jobs):
             seed = seeds[i]
             job_config = copy.deepcopy(resolved_config)
             chat_cfg = copy.deepcopy(env_chat_cfg)
+            job_max_turns = base_max_turns
+            if dataset_entries and i < len(dataset_entries):
+                total_blocks = int(dataset_entries[i].get("total_blocks", 1))
+                dynamic_turns = max(1, int(round(total_blocks * max_attempts_factor)))
+                job_max_turns = max(base_max_turns, dynamic_turns)
             job_data = {
                 "env_cls": env_cls,
                 "env_config": job_config,
@@ -352,12 +404,15 @@ def main() -> None:
                 cmd = [
                     sys.executable,
                     server_script,
-                    "--num-envs", "1",
-                    # TODO:
-                    "--device", "cuda:0",
-                    "--task", "Isaac-Stack-Cube-UR10-Short-Suction-IK-Rel-v0",
-                    "--headless"
+                    "--num-envs", os.environ.get("ISAAC_SERVER_NUM_ENVS", "1"),
+                    "--device", os.environ.get("DEVICE", "cuda:0"),
+                    "--task", os.environ.get("ISAAC_SERVER_TASK", "multipicture_teleport_stack_from_begin"),
                 ]
+                headless = os.environ.get("ISAAC_HEADLESS", "0").strip().lower() in {"1", "true", "yes", "on"}
+                cmd.append("--headless" if headless else "--no-headless")
+                extra_args = (os.environ.get("ISAAC_SERVER_EXTRA_ARGS") or "").strip()
+                if extra_args:
+                    cmd.extend(shlex.split(extra_args))
 
                 env = os.environ.copy()
                 # Server will auto-connect to the same Ray cluster

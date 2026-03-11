@@ -321,6 +321,9 @@ class FrankaRuntime:
             device=self.env.unwrapped.device,
         )
         self._step_initial_task_idx: dict[int, dict[str, int | bool | None]] = {}
+        self._seen_goal_xyz: dict[int, set[tuple[int, int, int]]] = {
+            env_id: set() for env_id in range(self.num_envs)
+        }
         self._gripper_center_marker = None
         self._gripper_marker_enabled = os.getenv("VAGEN_VIS_GRIPPER_CENTER", "1").strip().lower() not in {
             "0",
@@ -372,7 +375,9 @@ class FrankaRuntime:
         self.env.unwrapped._vagen_new_task_index = self.sm.new_task_index
 
     def reset_tracking(self, env_id: int) -> None:
-        self._step_initial_task_idx.pop(int(env_id), None)
+        env_id_i = int(env_id)
+        self._step_initial_task_idx.pop(env_id_i, None)
+        self._seen_goal_xyz[env_id_i] = set()
 
     def on_reset_env(self, env_id: int) -> None:
         self.sm.reset_envs([env_id])
@@ -435,6 +440,24 @@ class FrankaRuntime:
             return {"immediate_done": False, "done_payload": None}
 
         env_task_limit = int(self._task_limit_per_env[int(env_id)].item())
+        if isinstance(goal, dict) and all(k in goal for k in ("x", "y", "z")):
+            goal_xyz = (int(goal["x"]), int(goal["y"]), int(goal["z"]))
+            if goal_xyz in self._seen_goal_xyz[int(env_id)]:
+                self.reset_tracking(env_id)
+                self.sm.state[env_id] = self.sm.IDLE
+                return {
+                    "immediate_done": True,
+                    "done_payload": {
+                        "done": True,
+                        "success": False,
+                        "timeout": True,
+                        "new_task_available": False,
+                        "new_task_index": -1,
+                        "reason": "repeat_coordinate",
+                    },
+                }
+            self._seen_goal_xyz[int(env_id)].add(goal_xyz)
+
         if current_task_idx >= env_task_limit:
             self.reset_tracking(env_id)
             self.sm.num_tasks_per_env[env_id] = env_task_limit
@@ -447,6 +470,7 @@ class FrankaRuntime:
                     "timeout": True,
                     "new_task_available": False,
                     "new_task_index": -1,
+                    "reason": "max_attempts",
                 },
             }
 
@@ -489,6 +513,7 @@ class FrankaRuntime:
                         "done": bool(done_flag),
                         "success": bool(success_flag),
                         "timeout": False,
+                        "reason": "submit" if was_submit else None,
                         "new_task_available": bool(snapshot["new_task_available"]),
                         "new_task_index": int(snapshot["new_task_index"]),
                         "task_index": int(task_idx_now),
