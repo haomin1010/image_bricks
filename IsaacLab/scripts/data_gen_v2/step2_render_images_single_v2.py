@@ -136,7 +136,7 @@ class SnapshotSceneCfg(InteractiveSceneCfg):
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table.usd",
         ),
         init_state=AssetBaseCfg.InitialStateCfg(
-            pos=(0.0, 0.0, TABLE_HEIGHT), 
+            pos=(0.0, -0.1, TABLE_HEIGHT), 
             rot=(1.0, 0.0, 0.0, 0.0), 
         ),
     )
@@ -299,9 +299,9 @@ def add_coordinate_grid_to_scene_config(scene_cfg_cls, origin, grid_size=GRID_SI
         # --- 横线 (平行于X轴，沿 Y 方向排列) ---
         y_pos = origin[1] + i * cell_size  # 从原点开始，Y坐标 0,1,2...8
         
-        # Y=0 轴线(第一条横线)用绿色，其他用普通颜色
-        material = y_axis_material if i == 0 else normal_line_material
-        line_height = 0.003 if i == 0 else 0.001  # Y轴稍微厚一点
+        # (第一条横线，即y=0) 是X轴，用红色，其他用普通颜色
+        material = x_axis_material if i == 0 else normal_line_material
+        line_height = 0.003 if i == 0 else 0.001  # X轴稍微厚一点
         line_thickness = 0.004 if i == 0 else gap_width # 宽度改粗 (从上往下看才明显)
         
         h_line_cfg = AssetBaseCfg(
@@ -320,9 +320,9 @@ def add_coordinate_grid_to_scene_config(scene_cfg_cls, origin, grid_size=GRID_SI
         # --- 竖线 (平行于Y轴，沿 X 方向排列) ---
         x_pos = origin[0] + i * cell_size  # 从原点开始，X坐标 0,1,2...8
         
-        # X=0 轴线(第一条竖线)用红色，其他用普通颜色
-        material = x_axis_material if i == 0 else normal_line_material
-        line_height = 0.003 if i == 0 else 0.001  # X轴稍微厚一点
+        # (第一条竖线，即x=0) 是Y轴，用绿色，其他用普通颜色
+        material = y_axis_material if i == 0 else normal_line_material
+        line_height = 0.003 if i == 0 else 0.001  # Y轴稍微厚一点
         line_thickness = 0.004 if i == 0 else gap_width # 宽度改粗 (从上往下看才明显)
         
         v_line_cfg = AssetBaseCfg(
