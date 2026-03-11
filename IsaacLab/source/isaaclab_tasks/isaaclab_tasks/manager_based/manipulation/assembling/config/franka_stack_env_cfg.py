@@ -100,6 +100,11 @@ class FrankaStackEventsCfg(EventsCfg):
         mode="reset",
         params={"default_pose": list(mdp.DEFAULT_FRANKA_RESET_POSE)},
     )
+    
+    setup_orthographic_cameras = EventTerm(
+        func=mdp.setup_orthographic_cameras_event,
+        mode="startup",
+    )
 
     setup_cubes_startup = EventTerm(
         func=mdp.place_cubes_event,

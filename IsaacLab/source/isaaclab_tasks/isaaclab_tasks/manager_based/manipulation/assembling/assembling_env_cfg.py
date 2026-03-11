@@ -27,8 +27,8 @@ ASSEMBLING_MAX_CUBES = int(getattr(mdp, "DEFAULT_MAX_CUBES", 8))
 DEFAULT_GRID_ORIGIN: tuple[float, float, float] = (0.5, 0.0, 0.001)
 DEFAULT_GRID_SIZE = 8
 DEFAULT_GRID_LINE_THICKNESS = 0.001
-DEFAULT_GRID_CELL_SIZE = 0.055 + DEFAULT_GRID_LINE_THICKNESS
-DEFAULT_CUBE_SIZE = 0.0203 * 2.0
+DEFAULT_GRID_CELL_SIZE = 0.051
+DEFAULT_CUBE_SIZE = 0.05
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -54,9 +54,24 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
         spawn=GroundPlaneCfg(),
     )
 
-    light = AssetBaseCfg(
-        prim_path="/World/light",
-        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=3000.0),
+    dome_light = AssetBaseCfg(
+        prim_path="/World/dome_light",
+        spawn=sim_utils.DomeLightCfg(
+            intensity=1500.0,
+            color=(1.0, 1.0, 1.0)
+        )
+    )
+
+    side_light = AssetBaseCfg(
+        prim_path="/World/side_light",
+        spawn=sim_utils.DistantLightCfg(
+            intensity=500.0,
+            angle=0.0,
+            color=(0.9, 0.9, 0.9)
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(
+            rot=(0.5, 0.5, 0.0, 0.0)
+        )
     )
 
     def __post_init__(self):
@@ -99,8 +114,8 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
                 AssetBaseCfg(
                     prim_path=f"{{ENV_REGEX_NS}}/grid_h{suffix}",
                     spawn=sim_utils.CuboidCfg(
-                        size=(grid_size * cell_size + line_thickness, line_thickness, 0.0002),
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.1, 0.1)),
+                        size=(grid_size * cell_size + line_thickness, line_thickness, 0.001),
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.3, 0.3, 0.3)),
                         semantic_tags=[("class", "grid")],
                         collision_props=None,
                     ),
@@ -115,8 +130,8 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
                 AssetBaseCfg(
                     prim_path=f"{{ENV_REGEX_NS}}/grid_v{suffix}",
                     spawn=sim_utils.CuboidCfg(
-                        size=(line_thickness, grid_size * cell_size + line_thickness, 0.0002),
-                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.1, 0.1)),
+                        size=(line_thickness, grid_size * cell_size + line_thickness, 0.001),
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.3, 0.3, 0.3)),
                         semantic_tags=[("class", "grid")],
                         collision_props=None,
                     ),
@@ -130,7 +145,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
             AssetBaseCfg(
                 prim_path="{ENV_REGEX_NS}/grid_x_axis",
                 spawn=sim_utils.CuboidCfg(
-                    size=(grid_size * cell_size + line_thickness, line_thickness * 3.0, 0.0004),
+                    size=(grid_size * cell_size + line_thickness, line_thickness * 4.0, 0.003),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
                     semantic_tags=[("class", "grid_axis")],
                     collision_props=None,
@@ -144,7 +159,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
             AssetBaseCfg(
                 prim_path="{ENV_REGEX_NS}/grid_y_axis",
                 spawn=sim_utils.CuboidCfg(
-                    size=(line_thickness * 3.0, grid_size * cell_size + line_thickness, 0.0004),
+                    size=(line_thickness * 4.0, grid_size * cell_size + line_thickness, 0.003),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
                     semantic_tags=[("class", "grid_axis")],
                     collision_props=None,
@@ -158,7 +173,7 @@ class ObjectTableSceneCfg(InteractiveSceneCfg):
             AssetBaseCfg(
                 prim_path="{ENV_REGEX_NS}/grid_origin_marker",
                 spawn=sim_utils.CuboidCfg(
-                    size=(0.02, 0.02, 0.0006),
+                    size=(0.018, 0.018, 0.006),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
                     semantic_tags=[("class", "grid_origin")],
                     collision_props=None,
