@@ -29,6 +29,11 @@ DEFAULT_TELEPORT_CUBE_COLLISION_ENABLED = False
 class TeleportStackEventsCfg(EventsCfg):
     """Cube events for teleport stack runtime."""
 
+    setup_orthographic_cameras = EventTerm(
+        func=mdp.setup_orthographic_cameras_event,
+        mode="startup",
+    )
+
     setup_cubes_startup = EventTerm(
         func=mdp.place_cubes_event,
         mode="startup",
