@@ -289,17 +289,8 @@ class IsaacManagedEnv(GymImageEnv):
             placement_result = self.reward_manager.evaluate_placement(BrickPosition.from_mapping(goal))
             reward += placement_result.reward_delta
 
-            scene_images = await self._render_env_images()
-            cam0_images = [scene_images[0]] if scene_images else self._make_fallback_images(count=1, color=(40, 40, 40))
             feedback = self._build_placement_feedback(coordinate, placement_result)
-            obs = self._make_multi_image_obs(
-                action_template(
-                    action_result=feedback,
-                    img_placeholder=self.config.image_placeholder,
-                ),
-                cam0_images,
-                action_str=action_str,
-            )
+            obs = {"obs_str": action_template(action_result=feedback, img_placeholder="")}
 
             metrics["turn_metrics"]["action_is_effective"] = True
             metrics["traj_metrics"]["task_completed"] = bool(self.reward_manager.task_completed)
@@ -332,16 +323,12 @@ class IsaacManagedEnv(GymImageEnv):
                 isaac_info = {"timeout": True}
                 done = True
 
-            scene_images = await self._render_env_images()
-            cam0_images = [scene_images[0]] if scene_images else self._make_fallback_images(count=1, color=(40, 40, 40))
-            obs = self._make_multi_image_obs(
-                action_template(
+            obs = {
+                "obs_str": action_template(
                     action_result=self._build_submit_feedback(isaac_info),
-                    img_placeholder=self.config.image_placeholder,
-                ),
-                cam0_images,
-                action_str=action_str,
-            )
+                    img_placeholder="",
+                )
+            }
 
             metrics["turn_metrics"]["action_is_effective"] = True
             metrics["traj_metrics"]["success"] = bool(isaac_info.get("success", False))
@@ -360,37 +347,21 @@ class IsaacManagedEnv(GymImageEnv):
             if not selected_ids:
                 action_valid = False
                 metrics["turn_metrics"]["action_is_valid"] = False
-                cam0_images = [scene_images[0]] if scene_images else self._make_fallback_images(count=1, color=(30, 30, 30))
                 msg = (
                     f"Invalid camera query: {query_cameras}. "
                     f"Use exactly one camera ID: {{\"query\": [INT]}} with INT in 0..{max(0, max_cam - 1)}."
                 )
-                obs = self._make_multi_image_obs(
-                    action_template(
-                        action_result=msg,
-                        img_placeholder=self.config.image_placeholder,
-                    ),
-                    cam0_images,
-                    action_str=action_str,
-                )
+                obs = {"obs_str": action_template(action_result=msg, img_placeholder="")}
             else:
                 selected_id = selected_ids[0]
                 if selected_id in self._queried_cameras_since_last_placement:
                     action_valid = False
                     metrics["turn_metrics"]["action_is_valid"] = False
-                    cam0_images = [scene_images[0]] if scene_images else self._make_fallback_images(count=1, color=(30, 30, 30))
                     msg = (
                         f"Camera {selected_id} has already been queried since the last placement. "
                         "Please query a different camera first, or place a block."
                     )
-                    obs = self._make_multi_image_obs(
-                        action_template(
-                            action_result=msg,
-                            img_placeholder=self.config.image_placeholder,
-                        ),
-                        cam0_images,
-                        action_str=action_str,
-                    )
+                    obs = {"obs_str": action_template(action_result=msg, img_placeholder="")}
                 else:
                     selected_images = [scene_images[selected_id]]
                     obs = self._make_multi_image_obs(
@@ -407,22 +378,13 @@ class IsaacManagedEnv(GymImageEnv):
         else:
             action_valid = False
             metrics["turn_metrics"]["action_is_valid"] = False
-            scene_images = await self._render_env_images()
-            cam0_images = [scene_images[0]] if scene_images else self._make_fallback_images(count=1, color=(30, 30, 30))
             msg = (
                 "Could not parse your action. Valid formats:\n"
                 f'  Query one camera: {{"query": [2]}} (ID 0..{max(0, self.config.n_cameras - 1)})\n'
                 '  Place a brick: {"x": 2, "y": 3, "z": 0}\n'
                 "  Submit: submit"
             )
-            obs = self._make_multi_image_obs(
-                action_template(
-                    action_result=msg,
-                    img_placeholder=self.config.image_placeholder,
-                ),
-                cam0_images,
-                action_str=action_str,
-            )
+            obs = {"obs_str": action_template(action_result=msg, img_placeholder="")}
 
         reward += self.reward_manager.format_reward(action_valid)
 
@@ -542,8 +504,6 @@ class IsaacManagedEnv(GymImageEnv):
             f"Block placed at ({coordinate['x']}, {coordinate['y']}, {coordinate['z']}).",
             f"Rule check: {placement_result.feedback}",
         ]
-        if self.reward_manager.task_completed:
-            lines.append("Current structure matches the target. You can submit now.")
         return " ".join(lines)
 
     def _build_submit_feedback(self, isaac_info: Dict[str, Any]) -> str:

@@ -1,0 +1,236 @@
+[
+  {
+    "id": "00090_build_step00001",
+    "images": [
+      "00090_top.png",
+      "00090_front.png",
+      "00090_side.png",
+      "00090_iso.png",
+      "00090_iso2.png"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 6x6 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nAfter reset, each query action can request exactly one camera view.\nThere are 5 cameras with IDs 0..4.\n\nGrid coordinates: x, y in {0..5}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nEach turn output exactly one action.\nTo query one camera: {\"query\": [INT]} (ID in 0..4)\nTo place a brick: {\"x\": INT, \"y\": INT, \"z\": INT}\nWhen all bricks are placed correctly: submit\n\nExamples:\n  Query camera: {\"query\": [2]}\n  Place a brick: {\"x\": 2, \"y\": 3, \"z\": 0}\n  Submit: submit\n\n[System]: Environment Reset. Study the target carefully.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nNow query one camera per turn if needed, place the first cube, or submit if complete."
+      },
+      {
+        "role": "user",
+        "content": "Replicate the target structure shown in the images. The target has 5 blocks in a 4x4x4 grid. You may make at most 8 placement attempts. Supported candidate placements are rewarded; floating or non-candidate placements are penalized."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"x\": 2, \"y\": 0, \"z\": 0}"
+      }
+    ]
+  },
+  {
+    "id": "00090_build_step00002",
+    "images": [
+      "00090_top.png",
+      "00090_front.png",
+      "00090_side.png",
+      "00090_iso.png",
+      "00090_iso2.png",
+      "00090_step00001_front.png",
+      "00090_step00001_iso2.png"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 6x6 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nAfter reset, each query action can request exactly one camera view.\nThere are 5 cameras with IDs 0..4.\n\nGrid coordinates: x, y in {0..5}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nEach turn output exactly one action.\nTo query one camera: {\"query\": [INT]} (ID in 0..4)\nTo place a brick: {\"x\": INT, \"y\": INT, \"z\": INT}\nWhen all bricks are placed correctly: submit\n\nExamples:\n  Query camera: {\"query\": [2]}\n  Place a brick: {\"x\": 2, \"y\": 3, \"z\": 0}\n  Submit: submit\n\n[System]: Environment Reset. Study the target carefully.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nNow query one camera per turn if needed, place the first cube, or submit if complete."
+      },
+      {
+        "role": "user",
+        "content": "[System]: Block placed at (2, 0, 0). Rule check: The brick is supported and matches one valid target candidate.\nYou may query camera views, place the next cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"query\": [1]}"
+      },
+      {
+        "role": "user",
+        "content": "[System]: Query result for camera 1.\n<image>\nYou may query one camera, place a cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"query\": [4]}"
+      },
+      {
+        "role": "user",
+        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"x\": 2, \"y\": 1, \"z\": 0}"
+      }
+    ]
+  },
+  {
+    "id": "00090_build_step00003",
+    "images": [
+      "00090_top.png",
+      "00090_front.png",
+      "00090_side.png",
+      "00090_iso.png",
+      "00090_iso2.png",
+      "00090_step00002_side.png",
+      "00090_step00002_iso.png"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 6x6 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nAfter reset, each query action can request exactly one camera view.\nThere are 5 cameras with IDs 0..4.\n\nGrid coordinates: x, y in {0..5}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nEach turn output exactly one action.\nTo query one camera: {\"query\": [INT]} (ID in 0..4)\nTo place a brick: {\"x\": INT, \"y\": INT, \"z\": INT}\nWhen all bricks are placed correctly: submit\n\nExamples:\n  Query camera: {\"query\": [2]}\n  Place a brick: {\"x\": 2, \"y\": 3, \"z\": 0}\n  Submit: submit\n\n[System]: Environment Reset. Study the target carefully.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nNow query one camera per turn if needed, place the first cube, or submit if complete."
+      },
+      {
+        "role": "user",
+        "content": "[System]: Block placed at (2, 1, 0). Rule check: The brick is supported and matches one valid target candidate.\nYou may query camera views, place the next cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"query\": [2]}"
+      },
+      {
+        "role": "user",
+        "content": "[System]: Query result for camera 2.\n<image>\nYou may query one camera, place a cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"query\": [3]}"
+      },
+      {
+        "role": "user",
+        "content": "[System]: Query result for camera 3.\n<image>\nYou may query one camera, place a cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"x\": 2, \"y\": 2, \"z\": 0}"
+      }
+    ]
+  },
+  {
+    "id": "00090_build_step00004",
+    "images": [
+      "00090_top.png",
+      "00090_front.png",
+      "00090_side.png",
+      "00090_iso.png",
+      "00090_iso2.png",
+      "00090_step00003_top.png",
+      "00090_step00003_iso2.png"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 6x6 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nAfter reset, each query action can request exactly one camera view.\nThere are 5 cameras with IDs 0..4.\n\nGrid coordinates: x, y in {0..5}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nEach turn output exactly one action.\nTo query one camera: {\"query\": [INT]} (ID in 0..4)\nTo place a brick: {\"x\": INT, \"y\": INT, \"z\": INT}\nWhen all bricks are placed correctly: submit\n\nExamples:\n  Query camera: {\"query\": [2]}\n  Place a brick: {\"x\": 2, \"y\": 3, \"z\": 0}\n  Submit: submit\n\n[System]: Environment Reset. Study the target carefully.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nNow query one camera per turn if needed, place the first cube, or submit if complete."
+      },
+      {
+        "role": "user",
+        "content": "[System]: Block placed at (2, 2, 0). Rule check: The brick is supported and matches one valid target candidate.\nYou may query camera views, place the next cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"query\": [0]}"
+      },
+      {
+        "role": "user",
+        "content": "[System]: Query result for camera 0.\n<image>\nYou may query one camera, place a cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"query\": [4]}"
+      },
+      {
+        "role": "user",
+        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"x\": 2, \"y\": 1, \"z\": 1}"
+      }
+    ]
+  },
+  {
+    "id": "00090_build_step00005",
+    "images": [
+      "00090_top.png",
+      "00090_front.png",
+      "00090_side.png",
+      "00090_iso.png",
+      "00090_iso2.png",
+      "00090_step00004_front.png",
+      "00090_step00004_iso.png"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 6x6 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nAfter reset, each query action can request exactly one camera view.\nThere are 5 cameras with IDs 0..4.\n\nGrid coordinates: x, y in {0..5}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nEach turn output exactly one action.\nTo query one camera: {\"query\": [INT]} (ID in 0..4)\nTo place a brick: {\"x\": INT, \"y\": INT, \"z\": INT}\nWhen all bricks are placed correctly: submit\n\nExamples:\n  Query camera: {\"query\": [2]}\n  Place a brick: {\"x\": 2, \"y\": 3, \"z\": 0}\n  Submit: submit\n\n[System]: Environment Reset. Study the target carefully.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nNow query one camera per turn if needed, place the first cube, or submit if complete."
+      },
+      {
+        "role": "user",
+        "content": "[System]: Block placed at (2, 1, 1). Rule check: The brick is supported and matches one valid target candidate.\nYou may query camera views, place the next cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"query\": [1]}"
+      },
+      {
+        "role": "user",
+        "content": "[System]: Query result for camera 1.\n<image>\nYou may query one camera, place a cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"query\": [3]}"
+      },
+      {
+        "role": "user",
+        "content": "[System]: Query result for camera 3.\n<image>\nYou may query one camera, place a cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"x\": 2, \"y\": 1, \"z\": 2}"
+      }
+    ]
+  },
+  {
+    "id": "00090_build_step00006_submit",
+    "images": [
+      "00090_top.png",
+      "00090_front.png",
+      "00090_side.png",
+      "00090_iso.png",
+      "00090_iso2.png",
+      "00090_step00005_side.png",
+      "00090_step00005_iso2.png"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 6x6 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nAfter reset, each query action can request exactly one camera view.\nThere are 5 cameras with IDs 0..4.\n\nGrid coordinates: x, y in {0..5}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nEach turn output exactly one action.\nTo query one camera: {\"query\": [INT]} (ID in 0..4)\nTo place a brick: {\"x\": INT, \"y\": INT, \"z\": INT}\nWhen all bricks are placed correctly: submit\n\nExamples:\n  Query camera: {\"query\": [2]}\n  Place a brick: {\"x\": 2, \"y\": 3, \"z\": 0}\n  Submit: submit\n\n[System]: Environment Reset. Study the target carefully.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nNow query one camera per turn if needed, place the first cube, or submit if complete."
+      },
+      {
+        "role": "user",
+        "content": "[System]: Block placed at (2, 1, 2). Rule check: The brick is supported and matches one valid target candidate.\nYou may query camera views, place the next cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"query\": [2]}"
+      },
+      {
+        "role": "user",
+        "content": "[System]: Query result for camera 2.\n<image>\nYou may query one camera, place a cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "{\"query\": [4]}"
+      },
+      {
+        "role": "user",
+        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+      },
+      {
+        "role": "assistant",
+        "content": "submit"
+      }
+    ]
+  }
+]
