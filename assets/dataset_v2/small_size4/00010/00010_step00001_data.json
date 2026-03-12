@@ -1,0 +1,50 @@
+{
+  "source_file": "00010_step00001.json",
+  "shape_id": "00010_step00001",
+  "total_blocks": 1,
+  "original_data": {
+    "dimensions": {
+      "length": 4,
+      "width": 4,
+      "height": 4
+    },
+    "total_blocks": 1,
+    "blocks": [
+      {
+        "id": 1,
+        "x": 2,
+        "y": 3,
+        "z": 0
+      }
+    ]
+  },
+  "generated_images": [
+    "00010_step00001_top.png",
+    "00010_step00001_iso.png",
+    "00010_step00001_front.png",
+    "00010_step00001_side.png",
+    "00010_step00001_iso2.png"
+  ],
+  "camera_views": [
+    "top",
+    "iso",
+    "front",
+    "side",
+    "iso2"
+  ],
+  "world_coordinates": [
+    {
+      "world_x": -0.07650000000000001,
+      "world_y": -0.025499999999999988,
+      "world_z": 1.055
+    }
+  ],
+  "grid_info": {
+    "origin": [
+      -0.20400000000000001,
+      -0.20400000000000001,
+      1.031
+    ],
+    "cell_size": 0.051000000000000004
+  }
+}
