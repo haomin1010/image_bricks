@@ -250,13 +250,20 @@ def main():
     # Import Isaac AFTER Ray and ENV setup
     from isaaclab.app import AppLauncher
     
+    cube_size_raw = os.environ.get("VAGEN_CUBE_SIZE", "0.05")
+    try:
+        cube_size = float(cube_size_raw)
+    except ValueError:
+        cube_size = 0.05
+        print(f"[WARN]: Invalid VAGEN_CUBE_SIZE='{cube_size_raw}', fallback to {cube_size}")
+
     config = {
         "num_envs": args.num_envs,
         "device": args.device,
         "task": args.task,
         "headless": args.headless,
         "enable_cameras": True,
-        "cube_size": 0.0203 * 2.0,
+        "cube_size": cube_size,
     }
     
     print(f"Starting Isaac server with config: {config}")
@@ -299,7 +306,7 @@ def main():
         "build_env_cfg",
         lambda: build_env_cfg(
             task_name=resolved_task_id,
-            cube_size=config.get("cube_size", 0.0203 * 2.0),
+            cube_size=config.get("cube_size", 0.05),
         ),
     )
 
@@ -393,15 +400,26 @@ def main():
 
     print(f"Environment '{config['task']}' created")
     print(f"Action space: {env.action_space}")
-    line_thickness = 0.001  # Use 1mm for precision.
-    # Keep source cell spacing in sync with scene grid visualization.
-    cell_size = 0.055 + line_thickness
+    # Keep runtime cell spacing aligned with the scene grid specification.
+    cell_size = 0.051
+    line_thickness = 0.001
+    try:
+        if hasattr(env_cfg, "scene") and hasattr(env_cfg.scene, "get_grid_spec"):
+            _, _, spec_cell_size, spec_line_thickness = env_cfg.scene.get_grid_spec()
+            cell_size = float(spec_cell_size)
+            line_thickness = float(spec_line_thickness)
+    except Exception as e:
+        print(f"[WARN]: Failed to read scene grid spec, using defaults. error={e}")
+    print(
+        f"[INIT] Runtime grid spacing: cell_size={cell_size:.4f}, "
+        f"line_thickness={line_thickness:.4f}"
+    )
     exec_mgr = _run_with_init_heartbeat(
         "VagenStackExecutionManager",
         lambda: VagenStackExecutionManager(
             env=env,
             cube_names=cube_names,
-            cube_size=config.get("cube_size", 0.0203 * 2.0),
+            cube_size=config.get("cube_size", 0.05),
             ik_lambda_val=args.ik_lambda_val,
             cell_size=cell_size,
         ),

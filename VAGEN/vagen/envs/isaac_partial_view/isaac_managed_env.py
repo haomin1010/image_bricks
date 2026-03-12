@@ -10,8 +10,11 @@ Partial-view policy:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
+import os
+from datetime import datetime
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -35,12 +38,16 @@ from .utils.utils import parse_response
 
 logger = logging.getLogger(__name__)
 MAX_PARTIAL_VIEW_CAMERAS = 5
+STACK_CAMERA_LABELS = ("top", "front", "side", "iso", "iso2")
 DEFAULT_DATASET_ROOT = str(
     Path(__file__).resolve().parents[4]
     / "assets"
     / "dataset"
     / "output_snapshots"
     / "test"
+)
+DEFAULT_PLACEMENT_IMAGE_DUMP_ROOT = (
+    Path(__file__).resolve().parents[4] / "outputs" / "eval_isaac" / "live_placement_images"
 )
 
 
@@ -130,6 +137,13 @@ class IsaacManagedEnv(GymImageEnv):
         self._current_dataset_entry: Optional[Dict[str, Any]] = None
         # Track queried camera IDs since the last placement step.
         self._queried_cameras_since_last_placement: set[int] = set()
+        self._save_placement_images = _coerce_bool(os.getenv("VAGEN_ISAAC_SAVE_PLACEMENT_IMAGES", "1"))
+        dump_root_raw = (os.getenv("VAGEN_ISAAC_PLACEMENT_IMAGE_DUMP_DIR") or "").strip()
+        self._placement_dump_root = (
+            Path(dump_root_raw).expanduser() if dump_root_raw else Path(DEFAULT_PLACEMENT_IMAGE_DUMP_ROOT)
+        )
+        self._placement_dump_session_dir: Optional[Path] = None
+        self._placement_snapshot_index: int = 0
 
         reward_config = IsaacRewardConfig(
             format_reward=self.config.format_reward,
@@ -193,6 +207,15 @@ class IsaacManagedEnv(GymImageEnv):
         self.steps_taken = 0
         self.trajectory = []
         self._queried_cameras_since_last_placement.clear()
+        self._placement_snapshot_index = 0
+        self._placement_dump_session_dir = self._build_placement_dump_session_dir(seed)
+        if self._save_placement_images and self._placement_dump_session_dir is not None:
+            try:
+                self._placement_dump_session_dir.mkdir(parents=True, exist_ok=True)
+                env_info["placement_image_dump_dir"] = str(self._placement_dump_session_dir)
+            except Exception as exc:
+                logger.warning("Failed to create placement snapshot directory: %s", exc)
+                self._placement_dump_session_dir = None
 
         all_images = self._load_dataset_images()
         self._dataset_images_cache = list(all_images)
@@ -300,11 +323,20 @@ class IsaacManagedEnv(GymImageEnv):
             metrics["traj_metrics"]["termination_reason"] = isaac_info.get("termination_reason")
             # New placement opens a new query window.
             self._queried_cameras_since_last_placement.clear()
+            placement_images = await self._render_env_images()
+            snapshot_dir = await self._save_placement_snapshot(
+                images=placement_images,
+                coordinate=coordinate,
+                placement_outcome=placement_result.outcome,
+                step_done=done,
+                termination_reason=isaac_info.get("termination_reason"),
+            )
             info.update(
                 {
                     "timeout": bool(isaac_info.get("timeout", False)),
                     "placement_outcome": placement_result.outcome,
                     "placement_feedback": placement_result.feedback,
+                    "placement_snapshot_dir": snapshot_dir,
                 }
             )
 
@@ -494,6 +526,69 @@ class IsaacManagedEnv(GymImageEnv):
             fallback = self._make_fallback_images(count=n_images, color=(50, 50, 50))
             self._latest_scene_images = list(fallback)
             return fallback
+
+    def _build_placement_dump_session_dir(self, seed: int) -> Optional[Path]:
+        if not self._save_placement_images:
+            return None
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        env_slot = -1 if self._sub_env_id is None else int(self._sub_env_id)
+        dataset_stem = (
+            str(self._current_dataset_entry.get("stem", "unknown"))
+            if self._current_dataset_entry is not None
+            else "unknown"
+        )
+        session_name = f"{timestamp}_seed{int(seed):06d}_env{env_slot:02d}_{dataset_stem}"
+        return self._placement_dump_root / session_name
+
+    async def _save_placement_snapshot(
+        self,
+        *,
+        images: List[Image.Image],
+        coordinate: Dict[str, int],
+        placement_outcome: str,
+        step_done: bool,
+        termination_reason: Any,
+    ) -> Optional[str]:
+        if not self._save_placement_images or self._placement_dump_session_dir is None:
+            return None
+        if not images:
+            return None
+
+        self._placement_snapshot_index += 1
+        shot_dir = self._placement_dump_session_dir / f"placement_{self._placement_snapshot_index:03d}"
+        try:
+            await asyncio.to_thread(shot_dir.mkdir, parents=True, exist_ok=True)
+
+            metadata = {
+                "step_idx": int(self.steps_taken),
+                "placement_idx": int(self._placement_snapshot_index),
+                "coordinate": {
+                    "x": int(coordinate["x"]),
+                    "y": int(coordinate["y"]),
+                    "z": int(coordinate["z"]),
+                },
+                "placement_outcome": str(placement_outcome),
+                "step_done": bool(step_done),
+                "termination_reason": None if termination_reason is None else str(termination_reason),
+            }
+            meta_path = shot_dir / "meta.json"
+            await asyncio.to_thread(
+                meta_path.write_text,
+                json.dumps(metadata, ensure_ascii=False, indent=2),
+                "utf-8",
+            )
+
+            for idx, img in enumerate(images):
+                cam_label = STACK_CAMERA_LABELS[idx] if idx < len(STACK_CAMERA_LABELS) else f"cam{idx:02d}"
+                img_path = shot_dir / f"{idx:02d}_{cam_label}.png"
+                save_img = img
+                if save_img.size != self.config.image_size:
+                    save_img = save_img.resize(self.config.image_size, Image.Resampling.LANCZOS)
+                await asyncio.to_thread(save_img.save, img_path, "PNG")
+            return str(shot_dir)
+        except Exception as exc:
+            logger.warning("Failed to save placement snapshot #%d: %s", self._placement_snapshot_index, exc)
+            return None
 
     def _build_placement_feedback(
         self,

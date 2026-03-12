@@ -9,7 +9,7 @@ envs:
     max_turns: 15
     config:
       backend: isaac
-      dataset_root: ${fileroot}/assets/dataset_v2/large
+      dataset_root: ${fileroot}/assets/dataset_v2/small_size4
       eval_all_dataset_entries: true
       n_views: 5
       image_size: [224, 224]
