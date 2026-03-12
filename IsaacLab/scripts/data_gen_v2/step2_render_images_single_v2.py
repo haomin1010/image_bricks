@@ -415,7 +415,11 @@ def main():
     # 设置输出目录
     base_output_dir = os.path.join(DATASET_DIR, args_cli.type)
     # 使用 JSON 文件名作为子目录名 (e.g. "small_size4/00001")
-    shape_output_dir = os.path.join(base_output_dir, FILE_ID)
+    if "_step" in FILE_ID:
+        base_id = FILE_ID.split("_step")[0]
+        shape_output_dir = os.path.join(base_output_dir, base_id)
+    else:
+        shape_output_dir = os.path.join(base_output_dir, FILE_ID)
     os.makedirs(shape_output_dir, exist_ok=True)
     
     image_filenames = []

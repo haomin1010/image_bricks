@@ -1,0 +1,83 @@
+{
+  "source_file": "00025_step00004.json",
+  "shape_id": "00025_step00004",
+  "total_blocks": 4,
+  "original_data": {
+    "dimensions": {
+      "length": 4,
+      "width": 4,
+      "height": 4
+    },
+    "total_blocks": 4,
+    "blocks": [
+      {
+        "id": 1,
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      {
+        "id": 2,
+        "x": 1,
+        "y": 1,
+        "z": 0
+      },
+      {
+        "id": 3,
+        "x": 1,
+        "y": 2,
+        "z": 0
+      },
+      {
+        "id": 4,
+        "x": 2,
+        "y": 0,
+        "z": 0
+      }
+    ]
+  },
+  "generated_images": [
+    "00025_step00004_top.png",
+    "00025_step00004_iso.png",
+    "00025_step00004_front.png",
+    "00025_step00004_side.png",
+    "00025_step00004_iso2.png"
+  ],
+  "camera_views": [
+    "top",
+    "iso",
+    "front",
+    "side",
+    "iso2"
+  ],
+  "world_coordinates": [
+    {
+      "world_x": -0.12750000000000003,
+      "world_y": -0.17850000000000002,
+      "world_z": 1.055
+    },
+    {
+      "world_x": -0.12750000000000003,
+      "world_y": -0.12750000000000003,
+      "world_z": 1.055
+    },
+    {
+      "world_x": -0.12750000000000003,
+      "world_y": -0.07650000000000001,
+      "world_z": 1.055
+    },
+    {
+      "world_x": -0.07650000000000001,
+      "world_y": -0.17850000000000002,
+      "world_z": 1.055
+    }
+  ],
+  "grid_info": {
+    "origin": [
+      -0.20400000000000001,
+      -0.20400000000000001,
+      1.031
+    ],
+    "cell_size": 0.051000000000000004
+  }
+}
