@@ -9,9 +9,8 @@ For each sample folder, it generates:
     <shape_id>_sft_woCoT_partialview.json
 
 The output format follows the currently used partial-view training data:
-1) Build step00001: no query, directly place first block.
-2) Build step00002..stepN: two queries (one from {0,1,2}, one from {3,4}), then place.
-3) Submit step (stepN+1): two queries, then submit.
+1) Every build step queries at least one camera view before placing one block.
+2) Submit step (stepN+1) queries at least one camera view before submitting.
 
 All target images are expected to be in the sample folder.
 Each query result returns one image placeholder.
@@ -100,12 +99,31 @@ def _initial_target_user_text(desc: str) -> str:
         "Target camera 2: <image>\n"
         "Target camera 3: <image>\n"
         "Target camera 4: <image>\n"
-        "From the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "From the current state, you must query at least one camera before each placement or submit action.\n"
+        "Query additional views if needed, then choose the next action that best advances the build toward the target."
     )
 
 
 def _query_result_user_text(camera_id: int) -> str:
-    return f"[System]: Query result for camera {camera_id}.\n<image>\nYou may query one camera, place a cube, or submit."
+    return (
+        f"Query result for camera {camera_id}.\n<image>\n"
+        "You have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
+    )
+
+
+def _placement_applied_user_text() -> str:
+    return (
+        "Placement executed. The current state has been updated.\n"
+        "You must query at least one camera before your next placement or submit action.\n"
+        "You may query one camera, place a cube, or submit."
+    )
+
+
+def _submit_applied_user_text() -> str:
+    return (
+        "Submission executed.\n"
+        "The current state has been checked against the target."
+    )
 
 
 def _step_data_path(sample_dir: Path, shape_id: str, step_idx: int) -> Path:
@@ -261,7 +279,14 @@ def _build_samples_for_shape(sample_dir: Path) -> List[dict]:
         messages.append({"role": "user", "content": _initial_target_user_text(desc)})
 
         if step_idx == 1:
+            cam_id = CAMERA_GROUP_A_SEQ[0]
+            query_img = _target_image_name(shape_id, CAMERA_VIEWS[cam_id])
+            images.append(query_img)
+
+            messages.append({"role": "assistant", "content": _format_query_action(cam_id)})
+            messages.append({"role": "user", "content": _query_result_user_text(cam_id)})
             messages.append({"role": "assistant", "content": _format_place_action(place_block)})
+            messages.append({"role": "user", "content": _placement_applied_user_text()})
         else:
             turn_idx = step_idx - 2
             cam_1, cam_2 = _query_pair_for_turn(turn_idx)
@@ -274,6 +299,7 @@ def _build_samples_for_shape(sample_dir: Path) -> List[dict]:
             messages.append({"role": "assistant", "content": _format_query_action(cam_2)})
             messages.append({"role": "user", "content": _query_result_user_text(cam_2)})
             messages.append({"role": "assistant", "content": _format_place_action(place_block)})
+            messages.append({"role": "user", "content": _placement_applied_user_text()})
 
         samples.append({"id": sample_id, "images": images, "messages": messages})
 
@@ -296,6 +322,7 @@ def _build_samples_for_shape(sample_dir: Path) -> List[dict]:
         {"role": "assistant", "content": _format_query_action(cam_2)},
         {"role": "user", "content": _query_result_user_text(cam_2)},
         {"role": "assistant", "content": _format_submit_action()},
+        {"role": "user", "content": _submit_applied_user_text()},
     ]
     samples.append({"id": sample_id, "images": submit_images, "messages": submit_messages})
 

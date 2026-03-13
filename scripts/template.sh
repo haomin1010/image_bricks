@@ -118,7 +118,7 @@ vagen_eval_init_defaults() {
   vagen__export_default QWEN_BASE_URL "https://dashscope.aliyuncs.com/compatible-mode/v1"
   # openrouter uses the OpenAI-compatible client but needs base_url override in config.
   vagen__export_default OPENROUTER_BASE_URL "https://openrouter.ai/api/v1"
-  vagen__export_default OPENROUTER_MODEL_ID "gemini/gemini-2.5-flash"
+  vagen__export_default OPENROUTER_MODEL_ID "google/gemini-3-flash-preview"
   # One-click reasoning toggle for backends that support extra_body thinking controls.
   vagen__export_default VAGEN_ENABLE_THINKING "1"
   vagen__export_default VAGEN_THINKING_BUDGET "2048"

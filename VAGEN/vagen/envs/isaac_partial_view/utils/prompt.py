@@ -28,26 +28,26 @@ def init_observation_template(img_placeholders: str, camera_labels: list | None 
     return f"""\
 Target multi-view images:
 {camera_block}
-From the current state, query additional views if needed and choose the next action that best advances the build toward the target.
+From the current state, you must query at least one camera before each placement or submit action.
+Query additional views if needed, then choose the next action that best advances the build toward the target.
 """
 
 
 def action_template(action_result: str, img_placeholder: str) -> str:
     """Template for the observation returned after a placement/parse branch."""
     return f"""\
-[System]: {action_result}
-Camera 0 view:
-{img_placeholder}
-You may query camera views, place the next cube, or submit.
+{action_result}
+You must query at least one camera before your next placement or submit action.
+You may query one camera, place a cube, or submit.
 """
 
 
 def query_result_template(camera_id: int, img_placeholder: str) -> str:
     """Template for observations returned after query actions."""
     return f"""\
-[System]: Query result for camera {camera_id}.
+Query result for camera {camera_id}.
 {img_placeholder}
-You may query one camera, place a cube, or submit.
+You have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready.
 """
 
 

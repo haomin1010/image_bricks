@@ -23,7 +23,7 @@ envs:
       collapse_mock_after_attempt: ${oc.env:VAGEN_ISAAC_COLLAPSE_MOCK_AFTER_ATTEMPT,-1}
     chat_config:
       temperature: 0
-      max_tokens: 64
+      max_tokens: 4096
       top_p: 1.0
       extra_body:
         enable_thinking: ${oc.decode:${oc.env:VAGEN_ENABLE_THINKING,0}}

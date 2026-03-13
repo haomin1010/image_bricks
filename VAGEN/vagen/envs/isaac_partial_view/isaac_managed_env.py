@@ -502,19 +502,10 @@ class IsaacManagedEnv(GymImageEnv):
         coordinate: Dict[str, int],
         placement_result: PlacementRewardResult,
     ) -> str:
-        lines = [
-            f"Block placed at ({coordinate['x']}, {coordinate['y']}, {coordinate['z']}).",
-            f"Rule check: {placement_result.feedback}",
-        ]
-        return " ".join(lines)
+        return "Placement executed. The current state has been updated."
 
     def _build_submit_feedback(self, isaac_info: Dict[str, Any]) -> str:
-        verdict = (
-            "Submission accepted: the current structure matches the target."
-            if bool(isaac_info.get("success", False))
-            else "Submission finished the episode, but the current structure does not match the target."
-        )
-        return verdict
+        return "Submission executed.\nThe current state has been checked against the target."
 
     def _scan_dataset(self, root: str) -> List[Dict[str, Any]]:
         """Scan dataset recursively in strict new format."""
