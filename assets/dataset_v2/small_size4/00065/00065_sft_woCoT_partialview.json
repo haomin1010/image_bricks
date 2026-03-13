@@ -6,20 +6,33 @@
       "00065_front.png",
       "00065_side.png",
       "00065_iso.png",
-      "00065_iso2.png"
+      "00065_iso2.png",
+      "00065_front.png"
     ],
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are an expert AI with advanced 3D spatial perception acting as a robot arm controller. Your goal is to mentally reconstruct a target 3D voxel structure from 2D observation images and build it block-by-block.\n\nAt reset, you see 5 target camera views (IDs 0..4) of the finished structure made of BLUE blocks:\nView 0 (Top): Viewing from +Z axis.\nView 1 (Front): Viewing from +X axis.\nView 2 (Side): Viewing from +Y axis.\nViews 3 & 4 (Isometric): Diagonal upper angles showing depth and occlusion.\n\nCoordinate System & Constraints:\n- Grid Space: An 8x8x8 grid. All coordinates (x, y, z) MUST START from 0. Valid integer range is exactly [0, 7]. z is the vertical layer (0 = bottom).\n- Origin: The corner of the origin block at (0, 0, 0) is marked YELLOW in every view.\n- Axes: RED line = X-axis direction. GREEN line = Y-axis direction. Z-axis points vertically upwards.\n\nEach turn, output exactly one action in this format:\n<thinking>...</thinking>\n<action>...</action>\n\nUse the thinking section to step-by-step reason about the views, partial structure, and next action. Keep it concise.\nValid action content inside <action> is exactly ONE of:\n1) Query one camera: {\"query\": [INT]}\n2) Place a block: {\"x\": INT, \"y\": INT, \"z\": INT}\n3) When structure is complete: submit\n\nExamples:\n<thinking>Need to verify depth on the right side.</thinking>\n<action>{\"query\": [3]}</action>\n<thinking>Bottom layer has a block next to origin along X-axis.</thinking>\n<action>{\"x\": 1, \"y\": 0, \"z\": 0}</action>\n<thinking>All observed blocks placed. Structure complete.</thinking>\n<action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
+      },
+      {
+        "role": "assistant",
+        "content": "<thinking></thinking><action>{\"query\": [1]}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Query result for camera 1.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
         "content": "<thinking></thinking><action>{\"x\": 1, \"y\": 1, \"z\": 0}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -37,11 +50,11 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are an expert AI with advanced 3D spatial perception acting as a robot arm controller. Your goal is to mentally reconstruct a target 3D voxel structure from 2D observation images and build it block-by-block.\n\nAt reset, you see 5 target camera views (IDs 0..4) of the finished structure made of BLUE blocks:\nView 0 (Top): Viewing from +Z axis.\nView 1 (Front): Viewing from +X axis.\nView 2 (Side): Viewing from +Y axis.\nViews 3 & 4 (Isometric): Diagonal upper angles showing depth and occlusion.\n\nCoordinate System & Constraints:\n- Grid Space: An 8x8x8 grid. All coordinates (x, y, z) MUST START from 0. Valid integer range is exactly [0, 7]. z is the vertical layer (0 = bottom).\n- Origin: The corner of the origin block at (0, 0, 0) is marked YELLOW in every view.\n- Axes: RED line = X-axis direction. GREEN line = Y-axis direction. Z-axis points vertically upwards.\n\nEach turn, output exactly one action in this format:\n<thinking>...</thinking>\n<action>...</action>\n\nUse the thinking section to step-by-step reason about the views, partial structure, and next action. Keep it concise.\nValid action content inside <action> is exactly ONE of:\n1) Query one camera: {\"query\": [INT]}\n2) Place a block: {\"x\": INT, \"y\": INT, \"z\": INT}\n3) When structure is complete: submit\n\nExamples:\n<thinking>Need to verify depth on the right side.</thinking>\n<action>{\"query\": [3]}</action>\n<thinking>Bottom layer has a block next to origin along X-axis.</thinking>\n<action>{\"x\": 1, \"y\": 0, \"z\": 0}</action>\n<thinking>All observed blocks placed. Structure complete.</thinking>\n<action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
@@ -49,7 +62,7 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 1.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 1.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
@@ -57,11 +70,15 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 4.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
         "content": "<thinking></thinking><action>{\"x\": 1, \"y\": 2, \"z\": 0}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -79,11 +96,11 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are an expert AI with advanced 3D spatial perception acting as a robot arm controller. Your goal is to mentally reconstruct a target 3D voxel structure from 2D observation images and build it block-by-block.\n\nAt reset, you see 5 target camera views (IDs 0..4) of the finished structure made of BLUE blocks:\nView 0 (Top): Viewing from +Z axis.\nView 1 (Front): Viewing from +X axis.\nView 2 (Side): Viewing from +Y axis.\nViews 3 & 4 (Isometric): Diagonal upper angles showing depth and occlusion.\n\nCoordinate System & Constraints:\n- Grid Space: An 8x8x8 grid. All coordinates (x, y, z) MUST START from 0. Valid integer range is exactly [0, 7]. z is the vertical layer (0 = bottom).\n- Origin: The corner of the origin block at (0, 0, 0) is marked YELLOW in every view.\n- Axes: RED line = X-axis direction. GREEN line = Y-axis direction. Z-axis points vertically upwards.\n\nEach turn, output exactly one action in this format:\n<thinking>...</thinking>\n<action>...</action>\n\nUse the thinking section to step-by-step reason about the views, partial structure, and next action. Keep it concise.\nValid action content inside <action> is exactly ONE of:\n1) Query one camera: {\"query\": [INT]}\n2) Place a block: {\"x\": INT, \"y\": INT, \"z\": INT}\n3) When structure is complete: submit\n\nExamples:\n<thinking>Need to verify depth on the right side.</thinking>\n<action>{\"query\": [3]}</action>\n<thinking>Bottom layer has a block next to origin along X-axis.</thinking>\n<action>{\"x\": 1, \"y\": 0, \"z\": 0}</action>\n<thinking>All observed blocks placed. Structure complete.</thinking>\n<action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
@@ -91,7 +108,7 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 2.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 2.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
@@ -99,11 +116,15 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 3.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 3.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
         "content": "<thinking></thinking><action>{\"x\": 1, \"y\": 3, \"z\": 0}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -121,11 +142,11 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are an expert AI with advanced 3D spatial perception acting as a robot arm controller. Your goal is to mentally reconstruct a target 3D voxel structure from 2D observation images and build it block-by-block.\n\nAt reset, you see 5 target camera views (IDs 0..4) of the finished structure made of BLUE blocks:\nView 0 (Top): Viewing from +Z axis.\nView 1 (Front): Viewing from +X axis.\nView 2 (Side): Viewing from +Y axis.\nViews 3 & 4 (Isometric): Diagonal upper angles showing depth and occlusion.\n\nCoordinate System & Constraints:\n- Grid Space: An 8x8x8 grid. All coordinates (x, y, z) MUST START from 0. Valid integer range is exactly [0, 7]. z is the vertical layer (0 = bottom).\n- Origin: The corner of the origin block at (0, 0, 0) is marked YELLOW in every view.\n- Axes: RED line = X-axis direction. GREEN line = Y-axis direction. Z-axis points vertically upwards.\n\nEach turn, output exactly one action in this format:\n<thinking>...</thinking>\n<action>...</action>\n\nUse the thinking section to step-by-step reason about the views, partial structure, and next action. Keep it concise.\nValid action content inside <action> is exactly ONE of:\n1) Query one camera: {\"query\": [INT]}\n2) Place a block: {\"x\": INT, \"y\": INT, \"z\": INT}\n3) When structure is complete: submit\n\nExamples:\n<thinking>Need to verify depth on the right side.</thinking>\n<action>{\"query\": [3]}</action>\n<thinking>Bottom layer has a block next to origin along X-axis.</thinking>\n<action>{\"x\": 1, \"y\": 0, \"z\": 0}</action>\n<thinking>All observed blocks placed. Structure complete.</thinking>\n<action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
@@ -133,7 +154,7 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 0.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 0.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
@@ -141,11 +162,15 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 4.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
         "content": "<thinking></thinking><action>{\"x\": 2, \"y\": 2, \"z\": 0}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -163,11 +188,11 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are an expert AI with advanced 3D spatial perception acting as a robot arm controller. Your goal is to mentally reconstruct a target 3D voxel structure from 2D observation images and build it block-by-block.\n\nAt reset, you see 5 target camera views (IDs 0..4) of the finished structure made of BLUE blocks:\nView 0 (Top): Viewing from +Z axis.\nView 1 (Front): Viewing from +X axis.\nView 2 (Side): Viewing from +Y axis.\nViews 3 & 4 (Isometric): Diagonal upper angles showing depth and occlusion.\n\nCoordinate System & Constraints:\n- Grid Space: An 8x8x8 grid. All coordinates (x, y, z) MUST START from 0. Valid integer range is exactly [0, 7]. z is the vertical layer (0 = bottom).\n- Origin: The corner of the origin block at (0, 0, 0) is marked YELLOW in every view.\n- Axes: RED line = X-axis direction. GREEN line = Y-axis direction. Z-axis points vertically upwards.\n\nEach turn, output exactly one action in this format:\n<thinking>...</thinking>\n<action>...</action>\n\nUse the thinking section to step-by-step reason about the views, partial structure, and next action. Keep it concise.\nValid action content inside <action> is exactly ONE of:\n1) Query one camera: {\"query\": [INT]}\n2) Place a block: {\"x\": INT, \"y\": INT, \"z\": INT}\n3) When structure is complete: submit\n\nExamples:\n<thinking>Need to verify depth on the right side.</thinking>\n<action>{\"query\": [3]}</action>\n<thinking>Bottom layer has a block next to origin along X-axis.</thinking>\n<action>{\"x\": 1, \"y\": 0, \"z\": 0}</action>\n<thinking>All observed blocks placed. Structure complete.</thinking>\n<action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
@@ -175,7 +200,7 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 1.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 1.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
@@ -183,11 +208,15 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 3.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 3.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
         "content": "<thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -205,11 +234,11 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are an expert AI with advanced 3D spatial perception acting as a robot arm controller. Your goal is to mentally reconstruct a target 3D voxel structure from 2D observation images and build it block-by-block.\n\nAt reset, you see 5 target camera views (IDs 0..4) of the finished structure made of BLUE blocks:\nView 0 (Top): Viewing from +Z axis.\nView 1 (Front): Viewing from +X axis.\nView 2 (Side): Viewing from +Y axis.\nViews 3 & 4 (Isometric): Diagonal upper angles showing depth and occlusion.\n\nCoordinate System & Constraints:\n- Grid Space: An 8x8x8 grid. All coordinates (x, y, z) MUST START from 0. Valid integer range is exactly [0, 7]. z is the vertical layer (0 = bottom).\n- Origin: The corner of the origin block at (0, 0, 0) is marked YELLOW in every view.\n- Axes: RED line = X-axis direction. GREEN line = Y-axis direction. Z-axis points vertically upwards.\n\nEach turn, output exactly one action in this format:\n<thinking>...</thinking>\n<action>...</action>\n\nUse the thinking section to step-by-step reason about the views, partial structure, and next action. Keep it concise.\nValid action content inside <action> is exactly ONE of:\n1) Query one camera: {\"query\": [INT]}\n2) Place a block: {\"x\": INT, \"y\": INT, \"z\": INT}\n3) When structure is complete: submit\n\nExamples:\n<thinking>Need to verify depth on the right side.</thinking>\n<action>{\"query\": [3]}</action>\n<thinking>Bottom layer has a block next to origin along X-axis.</thinking>\n<action>{\"x\": 1, \"y\": 0, \"z\": 0}</action>\n<thinking>All observed blocks placed. Structure complete.</thinking>\n<action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
@@ -217,7 +246,7 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 2.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 2.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
@@ -225,11 +254,15 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 4.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
         "content": "<thinking></thinking><action>{\"x\": 3, \"y\": 2, \"z\": 0}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -247,11 +280,11 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are an expert AI with advanced 3D spatial perception acting as a robot arm controller. Your goal is to mentally reconstruct a target 3D voxel structure from 2D observation images and build it block-by-block.\n\nAt reset, you see 5 target camera views (IDs 0..4) of the finished structure made of BLUE blocks:\nView 0 (Top): Viewing from +Z axis.\nView 1 (Front): Viewing from +X axis.\nView 2 (Side): Viewing from +Y axis.\nViews 3 & 4 (Isometric): Diagonal upper angles showing depth and occlusion.\n\nCoordinate System & Constraints:\n- Grid Space: An 8x8x8 grid. All coordinates (x, y, z) MUST START from 0. Valid integer range is exactly [0, 7]. z is the vertical layer (0 = bottom).\n- Origin: The corner of the origin block at (0, 0, 0) is marked YELLOW in every view.\n- Axes: RED line = X-axis direction. GREEN line = Y-axis direction. Z-axis points vertically upwards.\n\nEach turn, output exactly one action in this format:\n<thinking>...</thinking>\n<action>...</action>\n\nUse the thinking section to step-by-step reason about the views, partial structure, and next action. Keep it concise.\nValid action content inside <action> is exactly ONE of:\n1) Query one camera: {\"query\": [INT]}\n2) Place a block: {\"x\": INT, \"y\": INT, \"z\": INT}\n3) When structure is complete: submit\n\nExamples:\n<thinking>Need to verify depth on the right side.</thinking>\n<action>{\"query\": [3]}</action>\n<thinking>Bottom layer has a block next to origin along X-axis.</thinking>\n<action>{\"x\": 1, \"y\": 0, \"z\": 0}</action>\n<thinking>All observed blocks placed. Structure complete.</thinking>\n<action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
@@ -259,7 +292,7 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 0.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 0.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
@@ -267,11 +300,15 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 3.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 3.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
         "content": "<thinking></thinking><action>{\"x\": 2, \"y\": 2, \"z\": 1}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -289,11 +326,11 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are an expert AI with advanced 3D spatial perception acting as a robot arm controller. Your goal is to mentally reconstruct a target 3D voxel structure from 2D observation images and build it block-by-block.\n\nAt reset, you see 5 target camera views (IDs 0..4) of the finished structure made of BLUE blocks:\nView 0 (Top): Viewing from +Z axis.\nView 1 (Front): Viewing from +X axis.\nView 2 (Side): Viewing from +Y axis.\nViews 3 & 4 (Isometric): Diagonal upper angles showing depth and occlusion.\n\nCoordinate System & Constraints:\n- Grid Space: An 8x8x8 grid. All coordinates (x, y, z) MUST START from 0. Valid integer range is exactly [0, 7]. z is the vertical layer (0 = bottom).\n- Origin: The corner of the origin block at (0, 0, 0) is marked YELLOW in every view.\n- Axes: RED line = X-axis direction. GREEN line = Y-axis direction. Z-axis points vertically upwards.\n\nEach turn, output exactly one action in this format:\n<thinking>...</thinking>\n<action>...</action>\n\nUse the thinking section to step-by-step reason about the views, partial structure, and next action. Keep it concise.\nValid action content inside <action> is exactly ONE of:\n1) Query one camera: {\"query\": [INT]}\n2) Place a block: {\"x\": INT, \"y\": INT, \"z\": INT}\n3) When structure is complete: submit\n\nExamples:\n<thinking>Need to verify depth on the right side.</thinking>\n<action>{\"query\": [3]}</action>\n<thinking>Bottom layer has a block next to origin along X-axis.</thinking>\n<action>{\"x\": 1, \"y\": 0, \"z\": 0}</action>\n<thinking>All observed blocks placed. Structure complete.</thinking>\n<action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
@@ -301,7 +338,7 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 1.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 1.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
@@ -309,11 +346,15 @@
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 4.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
         "content": "<thinking></thinking><action>submit</action>"
+      },
+      {
+        "role": "user",
+        "content": "Submission executed.\nThe current state has been checked against the target."
       }
     ]
   }
