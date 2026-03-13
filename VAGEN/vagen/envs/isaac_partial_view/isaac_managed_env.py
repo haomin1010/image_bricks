@@ -3,7 +3,8 @@ Isaac managed environment for BrickIsaac partial-view mode.
 
 Partial-view policy:
 - Reset shows full target multi-view images (5 cameras).
-- The model may query exactly one camera per turn with {"query": [id]}.
+- The model may query exactly one camera per turn with
+  <thinking>...</thinking><action>{"query": [id]}</action>.
 - Reward/termination/task evaluation follows the same logic as full-view mode.
 """
 
@@ -349,7 +350,8 @@ class IsaacManagedEnv(GymImageEnv):
                 metrics["turn_metrics"]["action_is_valid"] = False
                 msg = (
                     f"Invalid camera query: {query_cameras}. "
-                    f"Use exactly one camera ID: {{\"query\": [INT]}} with INT in 0..{max(0, max_cam - 1)}."
+                    "Use exactly one action in this format:\n"
+                    f"<thinking></thinking><action>{{\"query\": [INT]}}</action> with INT in 0..{max(0, max_cam - 1)}."
                 )
                 obs = {"obs_str": action_template(action_result=msg, img_placeholder="")}
             else:
@@ -380,9 +382,9 @@ class IsaacManagedEnv(GymImageEnv):
             metrics["turn_metrics"]["action_is_valid"] = False
             msg = (
                 "Could not parse your action. Valid formats:\n"
-                f'  Query one camera: {{"query": [2]}} (ID 0..{max(0, self.config.n_cameras - 1)})\n'
-                '  Place a brick: {"x": 2, "y": 3, "z": 0}\n'
-                "  Submit: submit"
+                f'  Query one camera: <thinking></thinking><action>{{"query": [2]}}</action> (ID 0..{max(0, self.config.n_cameras - 1)})\n'
+                '  Place a brick: <thinking></thinking><action>{"x": 2, "y": 3, "z": 0}</action>\n'
+                "  Submit: <thinking></thinking><action>submit</action>"
             )
             obs = {"obs_str": action_template(action_result=msg, img_placeholder="")}
 
@@ -426,7 +428,7 @@ class IsaacManagedEnv(GymImageEnv):
                 "reward": reward,
                 "success": info["success"],
                 "raw_action": parsed.get("action_content", ""),
-                "thought": parsed.get("think_content", ""),
+                "thought": parsed.get("thinking_content", ""),
                 "placement_outcome": None if placement_result is None else placement_result.outcome,
                 "termination_reason": term_reason,
                 "total_reward": self.total_reward,

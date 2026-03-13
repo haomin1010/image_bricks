@@ -2,13 +2,14 @@
 Parsing utilities for the BrickIsaac environment.
 Extracts an action from an LLM response.  Supported action types:
 
-1. **Place brick**  – ``{"x": INT, "y": INT, "z": INT}``
-2. **Query camera** – ``{"query": [INT]}``
-3. **Submit**        – ``submit`` or ``{"action": "submit"}``
+1. **Place brick**  – ``<thinking>...</thinking><action>{"x": INT, "y": INT, "z": INT}</action>``
+2. **Query camera** – ``<thinking>...</thinking><action>{"query": [INT]}</action>``
+3. **Submit**      – ``<thinking>...</thinking><action>submit</action>``
 """
 
 import json
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Tuple
 
 
 # Strict-only mode: no fallback JSON scanning.
@@ -38,15 +39,18 @@ def parse_response(response: str) -> Dict:
     """
     print("Parsing response:", response)
 
-    action_content = response
+    thinking_content, action_content = _extract_tagged_sections(response)
+    has_required_tags = thinking_content is not None and action_content is not None
 
-    coordinate = _extract_coordinate(action_content)
-    query_cameras = _extract_query(action_content)
-    is_submit = _is_submit(action_content)
+    coordinate = _extract_coordinate(action_content) if has_required_tags else None
+    query_cameras = _extract_query(action_content) if has_required_tags else None
+    is_submit = _is_submit(action_content) if has_required_tags else False
     format_correct = (
-        coordinate is not None or query_cameras is not None or is_submit
+        has_required_tags
+        and (coordinate is not None or query_cameras is not None or is_submit)
     )
 
+    print("Extracted thinking content:", thinking_content)
     print("Extracted coordinate:", coordinate)
     print("Extracted query cameras:", query_cameras)
     print("Is submit action:", is_submit)
@@ -55,11 +59,28 @@ def parse_response(response: str) -> Dict:
     return {
         "llm_raw_response": response,
         "action_content": action_content,
+        "thinking_content": thinking_content,
         "format_correct": format_correct,
         "coordinate": coordinate,
         "query_cameras": query_cameras,
         "is_submit": is_submit,
     }
+
+
+def _extract_tagged_sections(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """Extract ``<thinking>`` and ``<action>`` contents from a strict response."""
+    if not isinstance(text, str):
+        return None, None
+
+    match = re.fullmatch(
+        r"\s*<thinking>(?P<thinking>.*?)</thinking>\s*<action>(?P<action>.*?)</action>\s*",
+        text,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return None, None
+
+    return match.group("thinking").strip(), match.group("action").strip()
 
 
 def _is_submit(text: str) -> bool:
