@@ -55,7 +55,7 @@ def format_prompt(n_cameras: int = 5, add_example: bool = True) -> str:
     """Generate output-format instructions appended to the system prompt."""
     base_prompt = f"""\
 Each turn output exactly one action in this format:
-<thinking></thinking><action>...</action>
+<thinking></thinking><annotation></annotation><action>...</action>
 
 Use the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.
 Think step by step and keep the thinking concise and directly relevant to the next action.
@@ -75,9 +75,9 @@ submit
     if add_example:
         examples = """
 Examples:
-  Query camera: <thinking></thinking><action>{"query": [2]}</action>
-  Place a brick: <thinking></thinking><action>{"x": 2, "y": 3, "z": 0}</action>
-  Submit: <thinking></thinking><action>submit</action>
+  Query camera: <thinking></thinking><annotation></annotation><action>{"query": [2]}</action>
+  Place a brick: <thinking></thinking><annotation></annotation><action>{"x": 2, "y": 3, "z": 0}</action>
+  Submit: <thinking></thinking><annotation></annotation><action>submit</action>
 """
         return base_prompt + "\n" + examples
 
@@ -88,7 +88,7 @@ def _validate_system_prompt_text(text: str) -> bool:
     """Basic validation for both coordinate and query examples."""
     has_coord = '"x":' in text or '"x"' in text
     has_query = '"query"' in text
-    has_tags = "<thinking>" in text and "<action>" in text
+    has_tags = "<thinking>" in text and "<annotation>" in text and "<action>" in text
     return has_coord and has_query and has_tags
 
 
@@ -103,9 +103,9 @@ def get_checked_system_prompt(n_cameras: int = 5, add_example: bool = True) -> s
 
     corrective = (
         "System prompt validation failed. Please use one of the following formats:\n"
-        f'Query one camera: <thinking></thinking><action>{{"query": [0]}}</action> (ID 0..{n_cameras - 1})\n'
-        '<thinking></thinking><action>{"x": INT, "y": INT, "z": INT}</action>\n'
-        "<thinking></thinking><action>submit</action>\n"
+        f'Query one camera: <thinking></thinking><annotation></annotation><action>{{"query": [0]}}</action> (ID 0..{n_cameras - 1})\n'
+        '<thinking></thinking><annotation></annotation><action>{"x": INT, "y": INT, "z": INT}</action>\n'
+        "<thinking></thinking><annotation></annotation><action>submit</action>\n"
     )
     return corrective
 

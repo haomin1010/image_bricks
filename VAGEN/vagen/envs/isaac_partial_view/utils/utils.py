@@ -2,9 +2,9 @@
 Parsing utilities for the BrickIsaac environment.
 Extracts an action from an LLM response.  Supported action types:
 
-1. **Place brick**  – ``<thinking>...</thinking><action>{"x": INT, "y": INT, "z": INT}</action>``
-2. **Query camera** – ``<thinking>...</thinking><action>{"query": [INT]}</action>``
-3. **Submit**      – ``<thinking>...</thinking><action>submit</action>``
+1. **Place brick**  – ``<thinking>...</thinking><annotation>...</annotation><action>{"x": INT, "y": INT, "z": INT}</action>``
+2. **Query camera** – ``<thinking>...</thinking><annotation>...</annotation><action>{"query": [INT]}</action>``
+3. **Submit**      – ``<thinking>...</thinking><annotation>...</annotation><action>submit</action>``
 """
 
 import json
@@ -39,8 +39,12 @@ def parse_response(response: str) -> Dict:
     """
     print("Parsing response:", response)
 
-    thinking_content, action_content = _extract_tagged_sections(response)
-    has_required_tags = thinking_content is not None and action_content is not None
+    thinking_content, annotation_content, action_content = _extract_tagged_sections(response)
+    has_required_tags = (
+        thinking_content is not None
+        and annotation_content is not None
+        and action_content is not None
+    )
 
     coordinate = _extract_coordinate(action_content) if has_required_tags else None
     query_cameras = _extract_query(action_content) if has_required_tags else None
@@ -51,6 +55,7 @@ def parse_response(response: str) -> Dict:
     )
 
     print("Extracted thinking content:", thinking_content)
+    print("Extracted annotation content:", annotation_content)
     print("Extracted coordinate:", coordinate)
     print("Extracted query cameras:", query_cameras)
     print("Is submit action:", is_submit)
@@ -60,6 +65,7 @@ def parse_response(response: str) -> Dict:
         "llm_raw_response": response,
         "action_content": action_content,
         "thinking_content": thinking_content,
+        "annotation_content": annotation_content,
         "format_correct": format_correct,
         "coordinate": coordinate,
         "query_cameras": query_cameras,
@@ -67,20 +73,24 @@ def parse_response(response: str) -> Dict:
     }
 
 
-def _extract_tagged_sections(text: str) -> Tuple[Optional[str], Optional[str]]:
-    """Extract ``<thinking>`` and ``<action>`` contents from a strict response."""
+def _extract_tagged_sections(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Extract ``<thinking>``, ``<annotation>``, and ``<action>`` contents from a strict response."""
     if not isinstance(text, str):
-        return None, None
+        return None, None, None
 
     match = re.fullmatch(
-        r"\s*<thinking>(?P<thinking>.*?)</thinking>\s*<action>(?P<action>.*?)</action>\s*",
+        r"\s*<thinking>(?P<thinking>.*?)</thinking>\s*<annotation>(?P<annotation>.*?)</annotation>\s*<action>(?P<action>.*?)</action>\s*",
         text,
         flags=re.DOTALL,
     )
     if not match:
-        return None, None
+        return None, None, None
 
-    return match.group("thinking").strip(), match.group("action").strip()
+    return (
+        match.group("thinking").strip(),
+        match.group("annotation").strip(),
+        match.group("action").strip(),
+    )
 
 
 def _is_submit(text: str) -> bool:

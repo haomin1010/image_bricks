@@ -41,7 +41,7 @@ SYSTEM_PROMPT_TEXT = (
     "At reset you first see all 5 target camera views (IDs 0..4).\n"
     "Grid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\n"
     "Each turn output exactly one action in this format:\n"
-    "<thinking></thinking><action>...</action>\n\n"
+    "<thinking></thinking><annotation></annotation><action>...</action>\n\n"
     "Use the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\n"
     "Think step by step and keep the thinking concise and directly relevant to the next action.\n\n"
     "Valid action content inside <action> is exactly ONE of:\n\n"
@@ -52,9 +52,9 @@ SYSTEM_PROMPT_TEXT = (
     "3) When the structure is complete:\n"
     "submit\n\n"
     "Examples:\n"
-    "  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n"
-    "  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n"
-    "  Submit: <thinking></thinking><action>submit</action>"
+    "  Query camera: <thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>\n"
+    "  Place a brick: <thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n"
+    "  Submit: <thinking></thinking><annotation></annotation><action>submit</action>"
 )
 
 @dataclass(frozen=True)
@@ -174,7 +174,7 @@ def _format_submit_action() -> str:
 
 
 def _wrap_action(action_text: str) -> str:
-    return f"<thinking></thinking><action>{action_text}</action>"
+    return f"<thinking></thinking><annotation></annotation><action>{action_text}</action>"
 
 
 def _build_system_message() -> Dict[str, str]:
