@@ -38,38 +38,25 @@ CAMERA_GROUP_B_SEQ = (4, 3)  # one from {3,4}
 MAX_ATTEMPTS_FACTOR = 1.5
 
 SYSTEM_PROMPT_TEXT = (
-    "You are a robot arm controller. Your goal is to build a target block structure on a 6x6 tabletop grid.\n\n"
+    "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\n"
     "At reset you first see all 5 target camera views (IDs 0..4).\n"
-    "After reset, each query action can request exactly one camera view.\n"
-    "There are 5 cameras with IDs 0..4.\n\n"
-    "Grid coordinates: x, y in {0..5}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\n"
-    "Each turn output exactly ONE of:\n\n"
+    "Grid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\n"
+    "Each turn output exactly one action in this format:\n"
+    "<thinking></thinking><action>...</action>\n\n"
+    "Use the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\n"
+    "Think step by step and keep the thinking concise and directly relevant to the next action.\n\n"
+    "Valid action content inside <action> is exactly ONE of:\n\n"
     "1) Query one camera:\n"
     "{\"query\": [INT]}\n\n"
     "2) Place a cube:\n"
     "{\"x\": INT, \"y\": INT, \"z\": INT}\n\n"
     "3) When the structure is complete:\n"
     "submit\n\n"
-    "Each turn output exactly one action.\n"
-    "To query one camera: {\"query\": [INT]} (ID in 0..4)\n"
-    "To place a brick: {\"x\": INT, \"y\": INT, \"z\": INT}\n"
-    "When all bricks are placed correctly: submit\n\n"
     "Examples:\n"
-    "  Query camera: {\"query\": [2]}\n"
-    "  Place a brick: {\"x\": 2, \"y\": 3, \"z\": 0}\n"
-    "  Submit: submit\n\n"
-    "[System]: Environment Reset. Study the target carefully.\n"
-    "Target multi-view images:\n"
-    "Target camera 0: <image>\n"
-    "Target camera 1: <image>\n"
-    "Target camera 2: <image>\n"
-    "Target camera 3: <image>\n"
-    "Target camera 4: <image>\n"
-    "Now query one camera per turn if needed, place the first cube, or submit if complete."
+    "  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n"
+    "  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n"
+    "  Submit: <thinking></thinking><action>submit</action>"
 )
-
-RULECHECK_SUCCESS_TEXT = "The brick is supported and matches one valid target candidate."
-
 
 @dataclass(frozen=True)
 class Block:
@@ -98,25 +85,27 @@ def _max_attempts(total_blocks: int, factor: float) -> int:
 
 
 def _target_description(total_blocks: int, dims: Tuple[int, int, int], max_attempts: int) -> str:
-    length, width, height = dims
     return (
-        "Replicate the target structure shown in the images. "
-        f"The target has {total_blocks} blocks in a {length}x{width}x{height} grid. "
-        f"You may make at most {max_attempts} placement attempts. "
-        "Supported candidate placements are rewarded; floating or non-candidate placements are penalized."
+        "Build the target block structure shown in the reference images. "
+        "Use the target views to infer the correct shape and continue building from the current state."
+    )
+
+
+def _initial_target_user_text(desc: str) -> str:
+    return (
+        f"{desc}\n"
+        "Target multi-view images:\n"
+        "Target camera 0: <image>\n"
+        "Target camera 1: <image>\n"
+        "Target camera 2: <image>\n"
+        "Target camera 3: <image>\n"
+        "Target camera 4: <image>\n"
+        "From the current state, query additional views if needed and choose the next action that best advances the build toward the target."
     )
 
 
 def _query_result_user_text(camera_id: int) -> str:
     return f"[System]: Query result for camera {camera_id}.\n<image>\nYou may query one camera, place a cube, or submit."
-
-
-def _rulecheck_user_text(block: Block) -> str:
-    return (
-        f"[System]: Block placed at ({block.x}, {block.y}, {block.z}). "
-        f"Rule check: {RULECHECK_SUCCESS_TEXT}\n"
-        "You may query camera views, place the next cube, or submit."
-    )
 
 
 def _step_data_path(sample_dir: Path, shape_id: str, step_idx: int) -> Path:
@@ -153,11 +142,21 @@ def _infer_last_placed_block(prev_blocks: Sequence[Block], curr_blocks: Sequence
 
 
 def _format_place_action(block: Block) -> str:
-    return json.dumps({"x": int(block.x), "y": int(block.y), "z": int(block.z)}, ensure_ascii=True)
+    action = json.dumps({"x": int(block.x), "y": int(block.y), "z": int(block.z)}, ensure_ascii=True)
+    return _wrap_action(action)
 
 
 def _format_query_action(camera_id: int) -> str:
-    return json.dumps({"query": [int(camera_id)]}, ensure_ascii=True)
+    action = json.dumps({"query": [int(camera_id)]}, ensure_ascii=True)
+    return _wrap_action(action)
+
+
+def _format_submit_action() -> str:
+    return _wrap_action("submit")
+
+
+def _wrap_action(action_text: str) -> str:
+    return f"<thinking></thinking><action>{action_text}</action>"
 
 
 def _build_system_message() -> Dict[str, str]:
@@ -259,19 +258,17 @@ def _build_samples_for_shape(sample_dir: Path) -> List[dict]:
         place_block = placements[step_idx - 1]
         messages: List[Dict[str, str]] = [system_msg]
         images = list(target_images)
+        messages.append({"role": "user", "content": _initial_target_user_text(desc)})
 
         if step_idx == 1:
-            messages.append({"role": "user", "content": desc})
             messages.append({"role": "assistant", "content": _format_place_action(place_block)})
         else:
-            prev_block = placements[step_idx - 2]
             turn_idx = step_idx - 2
             cam_1, cam_2 = _query_pair_for_turn(turn_idx)
             query_img_1 = _camera_image_name_for_step(shape_id, step_idx - 1, cam_1)
             query_img_2 = _camera_image_name_for_step(shape_id, step_idx - 1, cam_2)
             images.extend([query_img_1, query_img_2])
 
-            messages.append({"role": "user", "content": _rulecheck_user_text(prev_block)})
             messages.append({"role": "assistant", "content": _format_query_action(cam_1)})
             messages.append({"role": "user", "content": _query_result_user_text(cam_1)})
             messages.append({"role": "assistant", "content": _format_query_action(cam_2)})
@@ -293,12 +290,12 @@ def _build_samples_for_shape(sample_dir: Path) -> List[dict]:
     )
     submit_messages: List[Dict[str, str]] = [
         system_msg,
-        {"role": "user", "content": _rulecheck_user_text(placements[-1])},
+        {"role": "user", "content": _initial_target_user_text(desc)},
         {"role": "assistant", "content": _format_query_action(cam_1)},
         {"role": "user", "content": _query_result_user_text(cam_1)},
         {"role": "assistant", "content": _format_query_action(cam_2)},
         {"role": "user", "content": _query_result_user_text(cam_2)},
-        {"role": "assistant", "content": "submit"},
+        {"role": "assistant", "content": _format_submit_action()},
     ]
     samples.append({"id": sample_id, "images": submit_images, "messages": submit_messages})
 

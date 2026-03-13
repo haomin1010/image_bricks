@@ -22,6 +22,7 @@ else:
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +41,25 @@ DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "conf", "evaluate.
 logger = logging.getLogger("view_suite.run_eval")
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
+
+
+def _stream_subprocess_output(
+    proc: subprocess.Popen,
+    log_path: str,
+) -> threading.Thread:
+    """Mirror child-process stdout to a log file and this terminal."""
+    def _pump() -> None:
+        with open(log_path, "a", encoding="utf-8") as log_f:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                log_f.write(line)
+                log_f.flush()
+                sys.stdout.write(f"[sglang] {line}")
+                sys.stdout.flush()
+
+    thread = threading.Thread(target=_pump, daemon=True)
+    thread.start()
+    return thread
 
 
 @dataclass
@@ -81,7 +101,7 @@ def _resolve_paths_in_config(obj: Any, base_dir: str) -> Any:
 
 
 def _scan_isaac_dataset_entries(dataset_root: str) -> List[Dict[str, Any]]:
-    """Recursively scan Isaac dataset entries in strict new format."""
+    """Recursively scan Isaac dataset entries, excluding intermediate step snapshots."""
     root = Path(dataset_root)
     img_views = ("top", "front", "side", "iso", "iso2")
     entries: List[Dict[str, Any]] = []
@@ -89,6 +109,8 @@ def _scan_isaac_dataset_entries(dataset_root: str) -> List[Dict[str, Any]]:
     for json_path in sorted(root.rglob("*_data.json")):
         stem = json_path.stem
         stem = stem[: -len("_data")]
+        if "_step" in stem:
+            continue
         base_dir = json_path.parent
 
         imgs = [base_dir / f"{stem}_{view}.png" for view in img_views]
@@ -415,7 +437,7 @@ def main() -> None:
                 env = os.environ.copy()
                 # Server will auto-connect to the same Ray cluster
                 # Run Isaac on GPU0 since the machine only has one GPU
-                env["CUDA_VISIBLE_DEVICES"] = "0"
+                env["CUDA_VISIBLE_DEVICES"] = os.environ.get("ISAAC_CUDA_VISIBLE_DEVICES", "0")
                 
                 print(f">>> Starting Isaac server in foreground (logs will print here): {' '.join(cmd)}")
                 # Start Isaac server as a child process that inherits stdout/stderr
@@ -456,9 +478,8 @@ def main() -> None:
                 if s.connect_ex(('127.0.0.1', int(port))) != 0:
                     print(f">>> SGLang server not detected on port {port}. Starting it...")
                     model_path = backend_cfg.get("model", "Qwen/Qwen2.5-VL-3B-Instruct")
-                    # Use GPU 0 for SGLang.
                     env = os.environ.copy()
-                    env["CUDA_VISIBLE_DEVICES"] = "0"
+                    env["CUDA_VISIBLE_DEVICES"] = os.environ.get("SGLANG_CUDA_VISIBLE_DEVICES", "4,5,6,7")
 
                     # Determine requested tp from backend_cfg if present, otherwise use number of GPUs.
                     try:
@@ -495,17 +516,23 @@ def main() -> None:
                         "--model-path", model_path,
                         "--port", str(port),
                         "--tp", str(tp_to_use),
-                        "--mem-fraction-static", "0.2"
+                        "--mem-fraction-static", os.environ.get("SGLANG_MEM_FRACTION_STATIC", "0.2")
                     ]
                     
-                    sglang_log_file = open("/tmp/sglang_server.log", "a")
+                    sglang_log_path = os.environ.get("VAGEN_SGLANG_LOG", "/tmp/sglang_server.log")
                     sglang_server_process = subprocess.Popen(
                         cmd,
                         env=env,
-                        stdout=sglang_log_file,
+                        stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
-                        text=True
+                        text=True,
+                        bufsize=1,
                     )
+                    _stream_subprocess_output(
+                        sglang_server_process,
+                        log_path=sglang_log_path,
+                    )
+                    print(f">>> Streaming SGLang logs to: {sglang_log_path}")
                     
                     print(f">>> Waiting for SGLang server to go online (max 300s)...")
                     import http.client
@@ -523,7 +550,7 @@ def main() -> None:
                             pass
                         time.sleep(1)
                     if not online:
-                        print(">>> Timeout waiting for SGLang server. Check /tmp/sglang_server.log")
+                        print(f">>> Timeout waiting for SGLang server. Check {sglang_log_path}")
                 else:
                     print(f">>> Found existing process on port {port}, assuming it's SGLang.")
     resume_mode = str(run_cfg.get("resume", "skip_completed"))

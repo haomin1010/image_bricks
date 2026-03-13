@@ -78,8 +78,8 @@ vagen_eval_init_defaults() {
   # ---- Isaac server selection ----
   # Mirrors the previous one-liner:
   #   ISAAC_CUDA_VISIBLE_DEVICES=0 DEVICE=cuda:0 ISAAC_HEADLESS=1 bash ...
-  vagen__export_default ISAAC_CUDA_VISIBLE_DEVICES "7"
-  vagen__export_default DEVICE "cuda:0" # TODO:
+  vagen__export_default ISAAC_CUDA_VISIBLE_DEVICES "0"
+  vagen__export_default DEVICE "cuda:0" # Isaac sees only ISAAC_CUDA_VISIBLE_DEVICES, so keep this at cuda:0.
   vagen__export_default ISAAC_HEADLESS "1" # single entry for Isaac headless mode: 1=headless, 0=GUI
 
   # ---- Isaac server argv (consumed by Python: vagen.evaluate.run_eval) ----
@@ -89,6 +89,12 @@ vagen_eval_init_defaults() {
   vagen__export_default ISAAC_SERVER_RECORD "0"
   vagen__export_default ISAAC_SERVER_VIDEO_LENGTH "0"
   vagen__export_default ISAAC_SERVER_VIDEO_INTERVAL "0"
+  # ---- Isaac rendering defaults ----
+  # OFF avoids temporal AA ghosting that can look like semi-transparent cubes.
+  vagen__export_default VAGEN_RENDER_AA_MODE "OFF"
+  vagen__export_default VAGEN_RENDER_ENABLE_DENOISER "0"
+  vagen__export_default VAGEN_RENDER_ENABLE_MOTION_BLUR "0"
+  vagen__export_default VAGEN_RENDER_INTERVAL "1"
   # Optional float; if empty it is omitted.
   : "${ISAAC_SERVER_IK_LAMBDA_VAL:=""}"
   # Extra raw args, e.g. '--task foo'. Headless mode is controlled only by ISAAC_HEADLESS.
@@ -102,11 +108,17 @@ vagen_eval_init_defaults() {
   vagen__export_default VAGEN_EVAL_CONFIG_DEFAULT "${IMAGE_BRICKS_ROOT}/VAGEN/examples/evaluate/isaac/config.yaml"
 
   # ---- Backend defaults ----
+  # sglang local server defaults.
+  vagen__export_default SGLANG_BASE_URL "http://127.0.0.1:30000/v1"
+  vagen__export_default SGLANG_MODEL_PATH "/mnt/data/lhm/LlamaFactory/saves/qwen2_5vl-3b/merged/sft_bricks_0"
+  vagen__export_default SGLANG_CUDA_VISIBLE_DEVICES "4,5,6,7"
+  vagen__export_default SGLANG_TP "4"
+  vagen__export_default SGLANG_MEM_FRACTION_STATIC "0.2"
   # qwen: base_url can be set via env; api_key must be provided externally.
   vagen__export_default QWEN_BASE_URL "https://dashscope.aliyuncs.com/compatible-mode/v1"
   # openrouter uses the OpenAI-compatible client but needs base_url override in config.
   vagen__export_default OPENROUTER_BASE_URL "https://openrouter.ai/api/v1"
-  vagen__export_default OPENROUTER_MODEL_ID "qwen/qwen2.5-pro-16k"
+  vagen__export_default OPENROUTER_MODEL_ID "gemini/gemini-2.5-flash"
   # One-click reasoning toggle for backends that support extra_body thinking controls.
   vagen__export_default VAGEN_ENABLE_THINKING "1"
   vagen__export_default VAGEN_THINKING_BUDGET "2048"
@@ -141,10 +153,26 @@ vagen_eval_cleanup_runtime() {
 
 vagen_eval_build_default_overrides() {
   # Usage: vagen_eval_build_default_overrides backend_key
-  # backend_key: qwen | openrouter | openai | sglang | ...
+  # backend_key: gemini | qwen | openrouter | openai | sglang | ...
   local backend_key="$1"
 
   case "$backend_key" in
+    gemini)
+      printf '%s\n' \
+        "run.backend=gemini" \
+        "backends.gemini.model=${GEMINI_MODEL_ID}" \
+        "run.max_concurrent_jobs=${VAGEN_EVAL_MAX_CONCURRENT_JOBS}" \
+        "fileroot=${VAGEN_FILEROOT}"
+      ;;
+    sglang)
+      printf '%s\n' \
+        "run.backend=sglang" \
+        "backends.sglang.base_url=${SGLANG_BASE_URL}" \
+        "backends.sglang.model=${SGLANG_MODEL_PATH}" \
+        "backends.sglang.tp=${SGLANG_TP}" \
+        "run.max_concurrent_jobs=${VAGEN_EVAL_MAX_CONCURRENT_JOBS}" \
+        "fileroot=${VAGEN_FILEROOT}"
+      ;;
     qwen)
       printf '%s\n' \
         "run.backend=qwen" \

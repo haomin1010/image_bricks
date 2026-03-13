@@ -15,17 +15,6 @@ After reset, each query action can request exactly one camera view.
 There are {n_cameras} cameras with IDs 0..{n_cameras - 1}.
 
 Grid coordinates: x, y in {{0..5}}, z is the vertical layer (0 = bottom, 1 = one above, etc.).
-
-Each turn output exactly ONE of:
-
-1) Query one camera:
-{{"query": [INT]}}
-
-2) Place a cube:
-{{"x": INT, "y": INT, "z": INT}}
-
-3) When the structure is complete:
-submit
 """
 
 
@@ -43,7 +32,6 @@ def init_observation_template(img_placeholders: str, camera_labels: list | None 
 [System]: Environment Reset. Study the target carefully.
 Target multi-view images:
 {camera_block}
-Now query one camera per turn if needed, place the first cube, or submit if complete.
 """
 
 

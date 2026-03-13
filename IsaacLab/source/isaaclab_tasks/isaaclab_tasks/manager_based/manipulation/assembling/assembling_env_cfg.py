@@ -328,11 +328,12 @@ class AssemblingEnvCfg(ManagerBasedRLEnvCfg):
         if self.sim.render_interval < 1:
             self.sim.render_interval = 1
 
-        # Prefer anti-aliasing modes with less temporal ghosting/blurring.
+        # Prefer render modes without temporal accumulation to avoid
+        # semi-transparent trails / ghosting on fast-moving teleported cubes.
         # Typical options: DLAA / TAA / OFF (depends on Isaac build).
         render_cfg = getattr(self.sim, "render", None)
         if render_cfg is not None:
-            aa_mode = os.getenv("VAGEN_RENDER_AA_MODE", "DLAA")
+            aa_mode = os.getenv("VAGEN_RENDER_AA_MODE", "OFF")
             if hasattr(render_cfg, "antialiasing_mode"):
                 render_cfg.antialiasing_mode = aa_mode
             # Disable denoiser by default for sharper edges in this task.
