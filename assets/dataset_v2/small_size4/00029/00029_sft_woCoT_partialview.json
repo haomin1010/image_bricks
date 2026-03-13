@@ -6,20 +6,33 @@
       "00029_front.png",
       "00029_side.png",
       "00029_iso.png",
-      "00029_iso2.png"
+      "00029_iso2.png",
+      "00029_front.png"
     ],
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><annotation></annotation><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><annotation></annotation><action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"x\": 1, \"y\": 0, \"z\": 0}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [1]}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Query result for camera 1.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
+      },
+      {
+        "role": "assistant",
+        "content": "<thinking></thinking><annotation></annotation><action>{\"x\": 1, \"y\": 0, \"z\": 0}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -37,31 +50,35 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><annotation></annotation><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><annotation></annotation><action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [1]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [1]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 1.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 1.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [4]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [4]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 4.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"x\": 2, \"y\": 0, \"z\": 0}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 0, \"z\": 0}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -79,31 +96,35 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><annotation></annotation><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><annotation></annotation><action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [2]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 2.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 2.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [3]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [3]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 3.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 3.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"x\": 2, \"y\": 1, \"z\": 0}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 1, \"z\": 0}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -121,31 +142,35 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><annotation></annotation><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><annotation></annotation><action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [0]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [0]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 0.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 0.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [4]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [4]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 4.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"x\": 3, \"y\": 0, \"z\": 0}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"x\": 3, \"y\": 0, \"z\": 0}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -163,31 +188,35 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><annotation></annotation><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><annotation></annotation><action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [1]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [1]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 1.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 1.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [3]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [3]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 3.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 3.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"x\": 1, \"y\": 0, \"z\": 1}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"x\": 1, \"y\": 0, \"z\": 1}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -205,31 +234,35 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><annotation></annotation><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><annotation></annotation><action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [2]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 2.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 2.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [4]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [4]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 4.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"x\": 2, \"y\": 0, \"z\": 1}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 0, \"z\": 1}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -247,31 +280,35 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><annotation></annotation><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><annotation></annotation><action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [0]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [0]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 0.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 0.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [3]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [3]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 3.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 3.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"x\": 2, \"y\": 0, \"z\": 2}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 0, \"z\": 2}</action>"
+      },
+      {
+        "role": "user",
+        "content": "Placement executed. The current state has been updated.\nYou must query at least one camera before your next placement or submit action.\nYou may query one camera, place a cube, or submit."
       }
     ]
   },
@@ -289,31 +326,35 @@
     "messages": [
       {
         "role": "system",
-        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><action>submit</action>"
+        "content": "You are a robot arm controller. Your goal is to build a target block structure on a 8x8 tabletop grid.\n\nAt reset you first see all 5 target camera views (IDs 0..4).\nGrid coordinates: x, y in {0..7}, z is the vertical layer (0 = bottom, 1 = one above, etc.).\n\nEach turn output exactly one action in this format:\n<thinking></thinking><annotation></annotation><action>...</action>\n\nUse the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.\nThink step by step and keep the thinking concise and directly relevant to the next action.\n\nValid action content inside <action> is exactly ONE of:\n\n1) Query one camera:\n{\"query\": [INT]}\n\n2) Place a cube:\n{\"x\": INT, \"y\": INT, \"z\": INT}\n\n3) When the structure is complete:\nsubmit\n\nExamples:\n  Query camera: <thinking></thinking><annotation></annotation><action>{\"query\": [2]}</action>\n  Place a brick: <thinking></thinking><annotation></annotation><action>{\"x\": 2, \"y\": 3, \"z\": 0}</action>\n  Submit: <thinking></thinking><annotation></annotation><action>submit</action>"
       },
       {
         "role": "user",
-        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, query additional views if needed and choose the next action that best advances the build toward the target."
+        "content": "Build the target block structure shown in the reference images. Use the target views to infer the correct shape and continue building from the current state.\nTarget multi-view images:\nTarget camera 0: <image>\nTarget camera 1: <image>\nTarget camera 2: <image>\nTarget camera 3: <image>\nTarget camera 4: <image>\nFrom the current state, you must query at least one camera before each placement or submit action.\nQuery additional views if needed, then choose the next action that best advances the build toward the target."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [1]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [1]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 1.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 1.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>{\"query\": [4]}</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>{\"query\": [4]}</action>"
       },
       {
         "role": "user",
-        "content": "[System]: Query result for camera 4.\n<image>\nYou may query one camera, place a cube, or submit."
+        "content": "Query result for camera 4.\n<image>\nYou have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready."
       },
       {
         "role": "assistant",
-        "content": "<thinking></thinking><action>submit</action>"
+        "content": "<thinking></thinking><annotation></annotation><action>submit</action>"
+      },
+      {
+        "role": "user",
+        "content": "Submission executed.\nThe current state has been checked against the target."
       }
     ]
   }
