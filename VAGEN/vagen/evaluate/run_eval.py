@@ -408,8 +408,6 @@ def main() -> None:
                     "--device", os.environ.get("DEVICE", "cuda:0"),
                     "--task", os.environ.get("ISAAC_SERVER_TASK", "multipicture_teleport_stack_from_begin"),
                 ]
-                headless = os.environ.get("ISAAC_HEADLESS", "0").strip().lower() in {"1", "true", "yes", "on"}
-                cmd.append("--headless" if headless else "--no-headless")
                 extra_args = (os.environ.get("ISAAC_SERVER_EXTRA_ARGS") or "").strip()
                 if extra_args:
                     cmd.extend(shlex.split(extra_args))

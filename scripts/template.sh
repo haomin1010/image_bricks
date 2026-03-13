@@ -78,9 +78,9 @@ vagen_eval_init_defaults() {
   # ---- Isaac server selection ----
   # Mirrors the previous one-liner:
   #   ISAAC_CUDA_VISIBLE_DEVICES=0 DEVICE=cuda:0 ISAAC_HEADLESS=1 bash ...
-  vagen__export_default ISAAC_CUDA_VISIBLE_DEVICES "0"
+  vagen__export_default ISAAC_CUDA_VISIBLE_DEVICES "7"
   vagen__export_default DEVICE "cuda:0" # TODO:
-  vagen__export_default ISAAC_HEADLESS "0" # default to headed mode
+  vagen__export_default ISAAC_HEADLESS "1" # single entry for Isaac headless mode: 1=headless, 0=GUI
 
   # ---- Isaac server argv (consumed by Python: vagen.evaluate.run_eval) ----
   vagen__export_default ISAAC_SERVER_NUM_ENVS "2" # keep aligned with eval concurrency by default
@@ -91,7 +91,7 @@ vagen_eval_init_defaults() {
   vagen__export_default ISAAC_SERVER_VIDEO_INTERVAL "0"
   # Optional float; if empty it is omitted.
   : "${ISAAC_SERVER_IK_LAMBDA_VAL:=""}"
-  # Extra raw args, e.g. '--no-headless --task foo'. Default empty.
+  # Extra raw args, e.g. '--task foo'. Headless mode is controlled only by ISAAC_HEADLESS.
   : "${ISAAC_SERVER_EXTRA_ARGS:=""}"
 
   # ---- Eval config + fileroot ----

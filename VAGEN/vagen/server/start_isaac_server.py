@@ -190,13 +190,14 @@ def _run_with_init_heartbeat(
 def main():
     """Main entry point - runs in main thread as required by Isaac Sim."""
     import argparse
+
+    def _read_headless_from_env() -> bool:
+        return os.environ.get("ISAAC_HEADLESS", "1").strip().lower() in {"1", "true", "yes", "on"}
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--task", type=str, default="multipicture_franka_stack_from_begin")
-    # Allow enabling/disabling headless mode via CLI
-    parser.add_argument("--headless", dest="headless", action="store_true", help="Run Isaac in headless mode (no GUI).")
-    parser.add_argument("--no-headless", dest="headless", action="store_false", help="Run Isaac with GUI (disable headless).")
     parser.add_argument("--record", action="store_true", default=False, help="Record video using gymnasium RecordVideo.")
     parser.add_argument(
         "--video-length",
@@ -261,7 +262,7 @@ def main():
         "num_envs": args.num_envs,
         "device": args.device,
         "task": args.task,
-        "headless": args.headless,
+        "headless": _read_headless_from_env(),
         "enable_cameras": True,
         "cube_size": cube_size,
     }

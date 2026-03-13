@@ -1,0 +1,14 @@
+# 保存旧的CUDA环境变量（防止覆盖后无法恢复）
+export OLD_CUDA_HOME=$CUDA_HOME
+export OLD_PATH=$PATH
+export OLD_LD_LIBRARY_PATH=$LD_LIBRARY_PATH
+
+# 设置项目专属的CUDA 12.8环境变量
+export CUDA_HOME=/usr/local/cuda-12.8
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+# 提示切换成功
+echo "✅ 已切换到CUDA 12.8（仅当前项目生效）"
+echo "   CUDA_HOME: $CUDA_HOME"
+echo "   nvcc版本: $(nvcc -V | grep release | awk '{print $6}')"
