@@ -12,6 +12,7 @@ You are a robot arm controller. Your goal is to build a target block structure o
 
 At reset you first see all {n_cameras} target camera views (IDs 0..{n_cameras - 1}).
 Grid coordinates: x, y in {{0..7}}, z is the vertical layer (0 = bottom, 1 = one above, etc.).
+When you find a suitable queried camera angle, keep that same angle for heatmap annotation and then perform the next placement step.
 """
 
 
@@ -30,6 +31,7 @@ Target multi-view images:
 {camera_block}
 From the current state, you must query at least one camera before each placement or submit action.
 Query additional views if needed, then choose the next action that best advances the build toward the target.
+After selecting a suitable queried camera, annotate the heatmap in that same camera view and then place the block.
 """
 
 
@@ -47,7 +49,9 @@ def query_result_template(camera_id: int, img_placeholder: str) -> str:
     return f"""\
 Query result for camera {camera_id}.
 {img_placeholder}
-You have queried a camera for this turn. Query another camera if needed, or place a cube / submit when ready.
+You have queried a camera for this turn.
+If this camera is suitable, keep this same camera as the heatmap annotation view and place the next cube.
+Otherwise, query another camera first.
 """
 
 
@@ -59,6 +63,12 @@ Each turn output exactly one action in this format:
 
 Use the thinking section to briefly reason about the target views, the current partial structure, and the next best action before acting.
 Think step by step and keep the thinking concise and directly relevant to the next action.
+
+The annotation section may be empty, or provide a heatmap hint in JSON:
+{{"heatmap": {{"probs": [[...], [...], ...]}}}}
+where probs is a 2D non-negative probability map in the currently selected query camera view.
+Use a compact coarse grid (for example 14x14 or 16x16). Do not output a single center point.
+If you decide a queried camera is suitable, annotate heatmap in that same camera view, then output the place action.
 
 Valid action content inside <action> is exactly ONE of:
 
@@ -76,7 +86,7 @@ submit
         examples = """
 Examples:
   Query camera: <thinking></thinking><annotation></annotation><action>{"query": [2]}</action>
-  Place a brick: <thinking></thinking><annotation></annotation><action>{"x": 2, "y": 3, "z": 0}</action>
+  Place a brick with heatmap: <thinking></thinking><annotation>{"heatmap": {"probs": [[0.0, 0.1, 0.0], [0.1, 0.8, 0.1], [0.0, 0.1, 0.0]]}}</annotation><action>{"x": 2, "y": 3, "z": 0}</action>
   Submit: <thinking></thinking><annotation></annotation><action>submit</action>
 """
         return base_prompt + "\n" + examples

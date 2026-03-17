@@ -1,0 +1,1257 @@
+{
+  "source_file": "__from_struct_orders__",
+  "sample_id": "00001",
+  "struct_id": "00001",
+  "order_index": 0,
+  "target_blocks_ordered": [
+    {
+      "x": 0,
+      "y": 2,
+      "z": 0
+    },
+    {
+      "x": 0,
+      "y": 3,
+      "z": 0
+    },
+    {
+      "x": 0,
+      "y": 2,
+      "z": 1
+    },
+    {
+      "x": 0,
+      "y": 3,
+      "z": 1
+    }
+  ],
+  "target_final_absolute_world_positions": [
+    {
+      "id": 1,
+      "grid_x": 0,
+      "grid_y": 2,
+      "grid_z": 0,
+      "world_x": -0.1785,
+      "world_y": -0.0765,
+      "world_z": 0.025
+    },
+    {
+      "id": 2,
+      "grid_x": 0,
+      "grid_y": 3,
+      "grid_z": 0,
+      "world_x": -0.1785,
+      "world_y": -0.02549999999999999,
+      "world_z": 0.025
+    },
+    {
+      "id": 3,
+      "grid_x": 0,
+      "grid_y": 2,
+      "grid_z": 1,
+      "world_x": -0.1785,
+      "world_y": -0.0765,
+      "world_z": 0.07500000000000001
+    },
+    {
+      "id": 4,
+      "grid_x": 0,
+      "grid_y": 3,
+      "grid_z": 1,
+      "world_x": -0.1785,
+      "world_y": -0.02549999999999999,
+      "world_z": 0.07500000000000001
+    }
+  ],
+  "block_colors": [
+    {
+      "id": 1,
+      "block_name": "Block_0",
+      "color_rgb": [
+        0.07334805586387155,
+        0.40928209830681417,
+        0.5364312392344652
+      ]
+    },
+    {
+      "id": 2,
+      "block_name": "Block_1",
+      "color_rgb": [
+        0.4183741756101657,
+        0.19235322841800667,
+        0.10044632206646473
+      ]
+    },
+    {
+      "id": 3,
+      "block_name": "Block_2",
+      "color_rgb": [
+        0.12205311337360891,
+        0.589736868428136,
+        0.5708361869614805
+      ]
+    },
+    {
+      "id": 4,
+      "block_name": "Block_3",
+      "color_rgb": [
+        0.39180345036564246,
+        0.17338214625418005,
+        0.03797694162686098
+      ]
+    }
+  ],
+  "structure": {
+    "structure_folder": "struct/00001",
+    "target_images_by_view": {
+      "oblique_main": "struct/00001/00001_oblique_main.png",
+      "oblique_side": "struct/00001/00001_oblique_side.png"
+    }
+  },
+  "steps": [
+    {
+      "step_index": 0,
+      "total_steps": 4,
+      "placed_count": 0,
+      "scattered_count": 4,
+      "placed_blocks": [],
+      "scattered_blocks": [
+        {
+          "grid_x": 5,
+          "grid_y": 2,
+          "grid_z": 0,
+          "world_x": 0.07143954758158469,
+          "world_y": -0.07709848305437117,
+          "world_z": 0.025,
+          "yaw_deg": 171.0134411948974
+        },
+        {
+          "grid_x": 6,
+          "grid_y": 2,
+          "grid_z": 0,
+          "world_x": 0.14326761393006554,
+          "world_y": -0.09134578455628584,
+          "world_z": 0.025,
+          "yaw_deg": -67.54372658434102
+        },
+        {
+          "grid_x": 6,
+          "grid_y": 5,
+          "grid_z": 0,
+          "world_x": 0.12788678516248175,
+          "world_y": 0.05167007227721085,
+          "world_z": 0.025,
+          "yaw_deg": 162.11479629336947
+        },
+        {
+          "grid_x": 0,
+          "grid_y": 5,
+          "grid_z": 0,
+          "world_x": -0.1554088031027759,
+          "world_y": 0.05964172743547708,
+          "world_z": 0.025,
+          "yaw_deg": -22.924101253409276
+        }
+      ],
+      "block_states": [
+        {
+          "id": 1,
+          "target_grid_xyz": [
+            0,
+            2,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.025
+          ],
+          "current_world_xyz": [
+            0.07143954758158469,
+            -0.07709848305437117,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": 171.0134411948974,
+          "is_placed": false
+        },
+        {
+          "id": 2,
+          "target_grid_xyz": [
+            0,
+            3,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.025
+          ],
+          "current_world_xyz": [
+            0.14326761393006554,
+            -0.09134578455628584,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": -67.54372658434102,
+          "is_placed": false
+        },
+        {
+          "id": 3,
+          "target_grid_xyz": [
+            0,
+            2,
+            1
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.07500000000000001
+          ],
+          "current_world_xyz": [
+            0.12788678516248175,
+            0.05167007227721085,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": 162.11479629336947,
+          "is_placed": false
+        },
+        {
+          "id": 4,
+          "target_grid_xyz": [
+            0,
+            3,
+            1
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.07500000000000001
+          ],
+          "current_world_xyz": [
+            -0.1554088031027759,
+            0.05964172743547708,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": -22.924101253409276,
+          "is_placed": false
+        }
+      ],
+      "generated_images": [
+        "views/00001_step00000_oblique_main.png",
+        "views/00001_step00000_oblique_side.png"
+      ],
+      "camera_views": [
+        "oblique_main",
+        "oblique_side"
+      ],
+      "annotation_multiview_bounding_box": {
+        "enabled": true,
+        "type": "multi_view_bounding_box",
+        "bbox_source": "projected_center_square",
+        "bbox_min_size_px": 27,
+        "bbox_base_size_px": 27,
+        "bbox_auto_scaled_with_resolution": true,
+        "save_bbox_images": true,
+        "has_next_action": true,
+        "next_block_index_0based": 0,
+        "next_block_id_1based": 1,
+        "next_target_world_xyz": [
+          -0.1785,
+          -0.0765,
+          0.025
+        ],
+        "selected_block_world_xyz": [
+          0.07143954758158469,
+          -0.07709848305437117,
+          0.025
+        ],
+        "views": {
+          "oblique_main": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueMain",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": {
+              "valid": true,
+              "u_px": 682.929206112531,
+              "v_px": 299.6621057576608,
+              "depth_view": -0.9382935517984053,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "selected_projection": {
+              "valid": true,
+              "u_px": 678.7611879061245,
+              "v_px": 563.383454904898,
+              "depth_view": -0.7315649136619546,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "target_bbox_xyxy": {
+              "x_min": 640,
+              "y_min": 257,
+              "x_max": 726,
+              "y_max": 343,
+              "width": 87,
+              "height": 87
+            },
+            "selected_bbox_xyxy": {
+              "x_min": 636,
+              "y_min": 520,
+              "x_max": 722,
+              "y_max": 606,
+              "width": 87,
+              "height": 87
+            },
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00001_step00000_oblique_main_gt_bbox_overlay.png"
+            }
+          },
+          "oblique_side": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueSide",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": {
+              "valid": true,
+              "u_px": 771.6047659625048,
+              "v_px": 388.7936185285346,
+              "depth_view": -0.8564926114406485,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "selected_projection": {
+              "valid": true,
+              "u_px": 342.2877799430984,
+              "v_px": 395.76980010565313,
+              "depth_view": -0.8506879499853552,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "target_bbox_xyxy": {
+              "x_min": 729,
+              "y_min": 346,
+              "x_max": 815,
+              "y_max": 432,
+              "width": 87,
+              "height": 87
+            },
+            "selected_bbox_xyxy": {
+              "x_min": 299,
+              "y_min": 353,
+              "x_max": 385,
+              "y_max": 439,
+              "width": 87,
+              "height": 87
+            },
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00001_step00000_oblique_side_gt_bbox_overlay.png"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step_index": 1,
+      "total_steps": 4,
+      "placed_count": 1,
+      "scattered_count": 3,
+      "placed_blocks": [
+        {
+          "x": 0,
+          "y": 2,
+          "z": 0
+        }
+      ],
+      "scattered_blocks": [
+        {
+          "grid_x": 6,
+          "grid_y": 2,
+          "grid_z": 0,
+          "world_x": 0.14326761393006554,
+          "world_y": -0.09134578455628584,
+          "world_z": 0.025,
+          "yaw_deg": -67.54372658434102
+        },
+        {
+          "grid_x": 6,
+          "grid_y": 5,
+          "grid_z": 0,
+          "world_x": 0.12788678516248175,
+          "world_y": 0.05167007227721085,
+          "world_z": 0.025,
+          "yaw_deg": 162.11479629336947
+        },
+        {
+          "grid_x": 0,
+          "grid_y": 5,
+          "grid_z": 0,
+          "world_x": -0.1554088031027759,
+          "world_y": 0.05964172743547708,
+          "world_z": 0.025,
+          "yaw_deg": -22.924101253409276
+        }
+      ],
+      "block_states": [
+        {
+          "id": 1,
+          "target_grid_xyz": [
+            0,
+            2,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.025
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.025
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        },
+        {
+          "id": 2,
+          "target_grid_xyz": [
+            0,
+            3,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.025
+          ],
+          "current_world_xyz": [
+            0.14326761393006554,
+            -0.09134578455628584,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": -67.54372658434102,
+          "is_placed": false
+        },
+        {
+          "id": 3,
+          "target_grid_xyz": [
+            0,
+            2,
+            1
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.07500000000000001
+          ],
+          "current_world_xyz": [
+            0.12788678516248175,
+            0.05167007227721085,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": 162.11479629336947,
+          "is_placed": false
+        },
+        {
+          "id": 4,
+          "target_grid_xyz": [
+            0,
+            3,
+            1
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.07500000000000001
+          ],
+          "current_world_xyz": [
+            -0.1554088031027759,
+            0.05964172743547708,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": -22.924101253409276,
+          "is_placed": false
+        }
+      ],
+      "generated_images": [
+        "views/00001_step00001_oblique_main.png",
+        "views/00001_step00001_oblique_side.png"
+      ],
+      "camera_views": [
+        "oblique_main",
+        "oblique_side"
+      ],
+      "annotation_multiview_bounding_box": {
+        "enabled": true,
+        "type": "multi_view_bounding_box",
+        "bbox_source": "projected_center_square",
+        "bbox_min_size_px": 27,
+        "bbox_base_size_px": 27,
+        "bbox_auto_scaled_with_resolution": true,
+        "save_bbox_images": true,
+        "has_next_action": true,
+        "next_block_index_0based": 1,
+        "next_block_id_1based": 2,
+        "next_target_world_xyz": [
+          -0.1785,
+          -0.02549999999999999,
+          0.025
+        ],
+        "selected_block_world_xyz": [
+          0.14326761393006554,
+          -0.09134578455628584,
+          0.025
+        ],
+        "views": {
+          "oblique_main": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueMain",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": {
+              "valid": true,
+              "u_px": 762.6816471379191,
+              "v_px": 300.94239110551973,
+              "depth_view": -0.9370081122173208,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "selected_projection": {
+              "valid": true,
+              "u_px": 646.4248120466937,
+              "v_px": 668.4933393259446,
+              "depth_view": -0.6725096382875255,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "target_bbox_xyxy": {
+              "x_min": 720,
+              "y_min": 258,
+              "x_max": 806,
+              "y_max": 344,
+              "width": 87,
+              "height": 87
+            },
+            "selected_bbox_xyxy": {
+              "x_min": 603,
+              "y_min": 625,
+              "x_max": 689,
+              "y_max": 711,
+              "width": 87,
+              "height": 87
+            },
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00001_step00001_oblique_main_gt_bbox_overlay.png"
+            }
+          },
+          "oblique_side": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueSide",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": {
+              "valid": true,
+              "u_px": 781.2428098078582,
+              "v_px": 441.7590053419598,
+              "depth_view": -0.8143066952478245,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "selected_projection": {
+              "valid": true,
+              "u_px": 222.79862597202927,
+              "v_px": 383.84013449120937,
+              "depth_view": -0.8606625369640359,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "target_bbox_xyxy": {
+              "x_min": 738,
+              "y_min": 399,
+              "x_max": 824,
+              "y_max": 485,
+              "width": 87,
+              "height": 87
+            },
+            "selected_bbox_xyxy": {
+              "x_min": 180,
+              "y_min": 341,
+              "x_max": 266,
+              "y_max": 427,
+              "width": 87,
+              "height": 87
+            },
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00001_step00001_oblique_side_gt_bbox_overlay.png"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step_index": 2,
+      "total_steps": 4,
+      "placed_count": 2,
+      "scattered_count": 2,
+      "placed_blocks": [
+        {
+          "x": 0,
+          "y": 2,
+          "z": 0
+        },
+        {
+          "x": 0,
+          "y": 3,
+          "z": 0
+        }
+      ],
+      "scattered_blocks": [
+        {
+          "grid_x": 6,
+          "grid_y": 5,
+          "grid_z": 0,
+          "world_x": 0.12788678516248175,
+          "world_y": 0.05167007227721085,
+          "world_z": 0.025,
+          "yaw_deg": 162.11479629336947
+        },
+        {
+          "grid_x": 0,
+          "grid_y": 5,
+          "grid_z": 0,
+          "world_x": -0.1554088031027759,
+          "world_y": 0.05964172743547708,
+          "world_z": 0.025,
+          "yaw_deg": -22.924101253409276
+        }
+      ],
+      "block_states": [
+        {
+          "id": 1,
+          "target_grid_xyz": [
+            0,
+            2,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.025
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.025
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        },
+        {
+          "id": 2,
+          "target_grid_xyz": [
+            0,
+            3,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.025
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.025
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        },
+        {
+          "id": 3,
+          "target_grid_xyz": [
+            0,
+            2,
+            1
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.07500000000000001
+          ],
+          "current_world_xyz": [
+            0.12788678516248175,
+            0.05167007227721085,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": 162.11479629336947,
+          "is_placed": false
+        },
+        {
+          "id": 4,
+          "target_grid_xyz": [
+            0,
+            3,
+            1
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.07500000000000001
+          ],
+          "current_world_xyz": [
+            -0.1554088031027759,
+            0.05964172743547708,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": -22.924101253409276,
+          "is_placed": false
+        }
+      ],
+      "generated_images": [
+        "views/00001_step00002_oblique_main.png",
+        "views/00001_step00002_oblique_side.png"
+      ],
+      "camera_views": [
+        "oblique_main",
+        "oblique_side"
+      ],
+      "annotation_multiview_bounding_box": {
+        "enabled": true,
+        "type": "multi_view_bounding_box",
+        "bbox_source": "projected_center_square",
+        "bbox_min_size_px": 27,
+        "bbox_base_size_px": 27,
+        "bbox_auto_scaled_with_resolution": true,
+        "save_bbox_images": true,
+        "has_next_action": true,
+        "next_block_index_0based": 2,
+        "next_block_id_1based": 3,
+        "next_target_world_xyz": [
+          -0.1785,
+          -0.0765,
+          0.07500000000000001
+        ],
+        "selected_block_world_xyz": [
+          0.12788678516248175,
+          0.05167007227721085,
+          0.025
+        ],
+        "views": {
+          "oblique_main": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueMain",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": {
+              "valid": true,
+              "u_px": 684.2684517766534,
+              "v_px": 231.26652624341713,
+              "depth_view": -0.910224601343844,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "selected_projection": {
+              "valid": true,
+              "u_px": 954.544853750467,
+              "v_px": 651.0757446866621,
+              "depth_view": -0.6816276025024067,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "target_bbox_xyxy": {
+              "x_min": 641,
+              "y_min": 188,
+              "x_max": 727,
+              "y_max": 274,
+              "width": 87,
+              "height": 87
+            },
+            "selected_bbox_xyxy": {
+              "x_min": 912,
+              "y_min": 608,
+              "x_max": 998,
+              "y_max": 694,
+              "width": 87,
+              "height": 87
+            },
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00001_step00002_oblique_main_gt_bbox_overlay.png"
+            }
+          },
+          "oblique_side": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueSide",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": {
+              "valid": true,
+              "u_px": 776.0807925052344,
+              "v_px": 316.6644548638905,
+              "depth_view": -0.828423655456815,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "selected_projection": {
+              "valid": true,
+              "u_px": 195.55799436548313,
+              "v_px": 545.3563160877405,
+              "depth_view": -0.7427510931681344,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "target_bbox_xyxy": {
+              "x_min": 733,
+              "y_min": 274,
+              "x_max": 819,
+              "y_max": 360,
+              "width": 87,
+              "height": 87
+            },
+            "selected_bbox_xyxy": {
+              "x_min": 153,
+              "y_min": 502,
+              "x_max": 239,
+              "y_max": 588,
+              "width": 87,
+              "height": 87
+            },
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00001_step00002_oblique_side_gt_bbox_overlay.png"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step_index": 3,
+      "total_steps": 4,
+      "placed_count": 3,
+      "scattered_count": 1,
+      "placed_blocks": [
+        {
+          "x": 0,
+          "y": 2,
+          "z": 0
+        },
+        {
+          "x": 0,
+          "y": 3,
+          "z": 0
+        },
+        {
+          "x": 0,
+          "y": 2,
+          "z": 1
+        }
+      ],
+      "scattered_blocks": [
+        {
+          "grid_x": 0,
+          "grid_y": 5,
+          "grid_z": 0,
+          "world_x": -0.1554088031027759,
+          "world_y": 0.05964172743547708,
+          "world_z": 0.025,
+          "yaw_deg": -22.924101253409276
+        }
+      ],
+      "block_states": [
+        {
+          "id": 1,
+          "target_grid_xyz": [
+            0,
+            2,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.025
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.025
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        },
+        {
+          "id": 2,
+          "target_grid_xyz": [
+            0,
+            3,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.025
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.025
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        },
+        {
+          "id": 3,
+          "target_grid_xyz": [
+            0,
+            2,
+            1
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.07500000000000001
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.07500000000000001
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        },
+        {
+          "id": 4,
+          "target_grid_xyz": [
+            0,
+            3,
+            1
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.07500000000000001
+          ],
+          "current_world_xyz": [
+            -0.1554088031027759,
+            0.05964172743547708,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": -22.924101253409276,
+          "is_placed": false
+        }
+      ],
+      "generated_images": [
+        "views/00001_step00003_oblique_main.png",
+        "views/00001_step00003_oblique_side.png"
+      ],
+      "camera_views": [
+        "oblique_main",
+        "oblique_side"
+      ],
+      "annotation_multiview_bounding_box": {
+        "enabled": true,
+        "type": "multi_view_bounding_box",
+        "bbox_source": "projected_center_square",
+        "bbox_min_size_px": 27,
+        "bbox_base_size_px": 27,
+        "bbox_auto_scaled_with_resolution": true,
+        "save_bbox_images": true,
+        "has_next_action": true,
+        "next_block_index_0based": 3,
+        "next_block_id_1based": 4,
+        "next_target_world_xyz": [
+          -0.1785,
+          -0.02549999999999999,
+          0.07500000000000001
+        ],
+        "selected_block_world_xyz": [
+          -0.1554088031027759,
+          0.05964172743547708,
+          0.025
+        ],
+        "views": {
+          "oblique_main": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueMain",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": {
+              "valid": true,
+              "u_px": 766.4856219383817,
+              "v_px": 232.48962171403358,
+              "depth_view": -0.9089391617627594,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "selected_projection": {
+              "valid": true,
+              "u_px": 900.5442003498456,
+              "v_px": 322.62424904153244,
+              "depth_view": -0.9157616820082101,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "target_bbox_xyxy": {
+              "x_min": 723,
+              "y_min": 189,
+              "x_max": 809,
+              "y_max": 275,
+              "width": 87,
+              "height": 87
+            },
+            "selected_bbox_xyxy": {
+              "x_min": 858,
+              "y_min": 280,
+              "x_max": 944,
+              "y_max": 366,
+              "width": 87,
+              "height": 87
+            },
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00001_step00003_oblique_main_gt_bbox_overlay.png"
+            }
+          },
+          "oblique_side": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueSide",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": {
+              "valid": true,
+              "u_px": 786.3030808941072,
+              "v_px": 367.6506035098129,
+              "depth_view": -0.7862377392639911,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "selected_projection": {
+              "valid": true,
+              "u_px": 754.4084730971273,
+              "v_px": 544.4895505926573,
+              "depth_view": -0.7432975893020315,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "target_bbox_xyxy": {
+              "x_min": 743,
+              "y_min": 325,
+              "x_max": 829,
+              "y_max": 411,
+              "width": 87,
+              "height": 87
+            },
+            "selected_bbox_xyxy": {
+              "x_min": 711,
+              "y_min": 501,
+              "x_max": 797,
+              "y_max": 587,
+              "width": 87,
+              "height": 87
+            },
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00001_step00003_oblique_side_gt_bbox_overlay.png"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step_index": 4,
+      "total_steps": 4,
+      "placed_count": 4,
+      "scattered_count": 0,
+      "placed_blocks": [
+        {
+          "x": 0,
+          "y": 2,
+          "z": 0
+        },
+        {
+          "x": 0,
+          "y": 3,
+          "z": 0
+        },
+        {
+          "x": 0,
+          "y": 2,
+          "z": 1
+        },
+        {
+          "x": 0,
+          "y": 3,
+          "z": 1
+        }
+      ],
+      "scattered_blocks": [],
+      "block_states": [
+        {
+          "id": 1,
+          "target_grid_xyz": [
+            0,
+            2,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.025
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.025
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        },
+        {
+          "id": 2,
+          "target_grid_xyz": [
+            0,
+            3,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.025
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.025
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        },
+        {
+          "id": 3,
+          "target_grid_xyz": [
+            0,
+            2,
+            1
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.07500000000000001
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.0765,
+            0.07500000000000001
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        },
+        {
+          "id": 4,
+          "target_grid_xyz": [
+            0,
+            3,
+            1
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.07500000000000001
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.02549999999999999,
+            0.07500000000000001
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        }
+      ],
+      "generated_images": [
+        "views/00001_step00004_oblique_main.png",
+        "views/00001_step00004_oblique_side.png"
+      ],
+      "camera_views": [
+        "oblique_main",
+        "oblique_side"
+      ],
+      "annotation_multiview_bounding_box": {
+        "enabled": true,
+        "type": "multi_view_bounding_box",
+        "bbox_source": "projected_center_square",
+        "bbox_min_size_px": 27,
+        "bbox_base_size_px": 27,
+        "bbox_auto_scaled_with_resolution": true,
+        "save_bbox_images": true,
+        "has_next_action": false,
+        "next_block_index_0based": null,
+        "next_block_id_1based": null,
+        "next_target_world_xyz": null,
+        "selected_block_world_xyz": null,
+        "views": {
+          "oblique_main": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueMain",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": null,
+            "selected_projection": null,
+            "target_bbox_xyxy": null,
+            "selected_bbox_xyxy": null,
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00001_step00004_oblique_main_gt_bbox_overlay.png"
+            }
+          },
+          "oblique_side": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueSide",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": null,
+            "selected_projection": null,
+            "target_bbox_xyxy": null,
+            "selected_bbox_xyxy": null,
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00001_step00004_oblique_side_gt_bbox_overlay.png"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,294 @@
+{
+  "source_file": "__from_struct_orders__",
+  "sample_id": "00002",
+  "struct_id": "00002",
+  "order_index": 0,
+  "target_blocks_ordered": [
+    {
+      "x": 0,
+      "y": 0,
+      "z": 0
+    }
+  ],
+  "target_final_absolute_world_positions": [
+    {
+      "id": 1,
+      "grid_x": 0,
+      "grid_y": 0,
+      "grid_z": 0,
+      "world_x": -0.1785,
+      "world_y": -0.1785,
+      "world_z": 0.025
+    }
+  ],
+  "block_colors": [
+    {
+      "id": 1,
+      "block_name": "Block_0",
+      "color_rgb": [
+        0.07334805586387155,
+        0.40928209830681417,
+        0.5364312392344652
+      ]
+    }
+  ],
+  "structure": {
+    "structure_folder": "struct/00002",
+    "target_images_by_view": {
+      "oblique_main": "struct/00002/00002_oblique_main.png",
+      "oblique_side": "struct/00002/00002_oblique_side.png"
+    }
+  },
+  "steps": [
+    {
+      "step_index": 0,
+      "total_steps": 1,
+      "placed_count": 0,
+      "scattered_count": 1,
+      "placed_blocks": [],
+      "scattered_blocks": [
+        {
+          "grid_x": 4,
+          "grid_y": 3,
+          "grid_z": 0,
+          "world_x": 0.01824392073489514,
+          "world_y": -0.014145885792917728,
+          "world_z": 0.025,
+          "yaw_deg": -54.123922285300466
+        }
+      ],
+      "block_states": [
+        {
+          "id": 1,
+          "target_grid_xyz": [
+            0,
+            0,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.1785,
+            0.025
+          ],
+          "current_world_xyz": [
+            0.01824392073489514,
+            -0.014145885792917728,
+            0.025
+          ],
+          "current_source": "scatter",
+          "current_yaw_deg": -54.123922285300466,
+          "is_placed": false
+        }
+      ],
+      "generated_images": [
+        "views/00002_step00000_oblique_main.png",
+        "views/00002_step00000_oblique_side.png"
+      ],
+      "camera_views": [
+        "oblique_main",
+        "oblique_side"
+      ],
+      "annotation_multiview_bounding_box": {
+        "enabled": true,
+        "type": "multi_view_bounding_box",
+        "bbox_source": "projected_center_square",
+        "bbox_min_size_px": 27,
+        "bbox_base_size_px": 27,
+        "bbox_auto_scaled_with_resolution": true,
+        "save_bbox_images": true,
+        "has_next_action": true,
+        "next_block_index_0based": 0,
+        "next_block_id_1based": 1,
+        "next_target_world_xyz": [
+          -0.1785,
+          -0.1785,
+          0.025
+        ],
+        "selected_block_world_xyz": [
+          0.01824392073489514,
+          -0.014145885792917728,
+          0.025
+        ],
+        "views": {
+          "oblique_main": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueMain",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": {
+              "valid": true,
+              "u_px": 524.0780863319098,
+              "v_px": 297.1120300667942,
+              "depth_view": -0.9408644309605745,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "selected_projection": {
+              "valid": true,
+              "u_px": 798.7662582176246,
+              "v_px": 497.78752806093746,
+              "depth_view": -0.7739803003180692,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "target_bbox_xyxy": {
+              "x_min": 481,
+              "y_min": 254,
+              "x_max": 567,
+              "y_max": 340,
+              "width": 87,
+              "height": 87
+            },
+            "selected_bbox_xyxy": {
+              "x_min": 756,
+              "y_min": 455,
+              "x_max": 842,
+              "y_max": 541,
+              "width": 87,
+              "height": 87
+            },
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00002_step00000_oblique_main_gt_bbox_overlay.png"
+            }
+          },
+          "oblique_side": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueSide",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": {
+              "valid": true,
+              "u_px": 754.9215472823599,
+              "v_px": 297.11182657312355,
+              "depth_view": -0.9408644438262964,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "selected_projection": {
+              "valid": true,
+              "u_px": 424.31491163665686,
+              "v_px": 461.05008581693573,
+              "depth_view": -0.7999559388577075,
+              "inside_image": true,
+              "method": "usd_view_projection"
+            },
+            "target_bbox_xyxy": {
+              "x_min": 712,
+              "y_min": 254,
+              "x_max": 798,
+              "y_max": 340,
+              "width": 87,
+              "height": 87
+            },
+            "selected_bbox_xyxy": {
+              "x_min": 381,
+              "y_min": 418,
+              "x_max": 467,
+              "y_max": 504,
+              "width": 87,
+              "height": 87
+            },
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00002_step00000_oblique_side_gt_bbox_overlay.png"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step_index": 1,
+      "total_steps": 1,
+      "placed_count": 1,
+      "scattered_count": 0,
+      "placed_blocks": [
+        {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      ],
+      "scattered_blocks": [],
+      "block_states": [
+        {
+          "id": 1,
+          "target_grid_xyz": [
+            0,
+            0,
+            0
+          ],
+          "target_world_xyz": [
+            -0.1785,
+            -0.1785,
+            0.025
+          ],
+          "current_world_xyz": [
+            -0.1785,
+            -0.1785,
+            0.025
+          ],
+          "current_source": "placed",
+          "current_yaw_deg": 0.0,
+          "is_placed": true
+        }
+      ],
+      "generated_images": [
+        "views/00002_step00001_oblique_main.png",
+        "views/00002_step00001_oblique_side.png"
+      ],
+      "camera_views": [
+        "oblique_main",
+        "oblique_side"
+      ],
+      "annotation_multiview_bounding_box": {
+        "enabled": true,
+        "type": "multi_view_bounding_box",
+        "bbox_source": "projected_center_square",
+        "bbox_min_size_px": 27,
+        "bbox_base_size_px": 27,
+        "bbox_auto_scaled_with_resolution": true,
+        "save_bbox_images": true,
+        "has_next_action": false,
+        "next_block_index_0based": null,
+        "next_block_id_1based": null,
+        "next_target_world_xyz": null,
+        "selected_block_world_xyz": null,
+        "views": {
+          "oblique_main": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueMain",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": null,
+            "selected_projection": null,
+            "target_bbox_xyxy": null,
+            "selected_bbox_xyxy": null,
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00002_step00001_oblique_main_gt_bbox_overlay.png"
+            }
+          },
+          "oblique_side": {
+            "camera_prim_path": "/World/envs/env_0/CameraObliqueSide",
+            "image_size_hw": [
+              720,
+              1280
+            ],
+            "bbox_size_px": 87,
+            "target_projection": null,
+            "selected_projection": null,
+            "target_bbox_xyxy": null,
+            "selected_bbox_xyxy": null,
+            "bbox_files": {
+              "bbox_overlay_image": "bbox_overlay/00002_step00001_oblique_side_gt_bbox_overlay.png"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

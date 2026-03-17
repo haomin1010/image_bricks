@@ -1,0 +1,20 @@
+{
+  "rules": "small_size4_connected_stable",
+  "dimensions": {
+    "length": 4,
+    "width": 4,
+    "height": 4
+  },
+  "seed": 1042,
+  "total_blocks": 1,
+  "blocks_canonical": [
+    {
+      "id": 0,
+      "x": 0,
+      "y": 0,
+      "z": 0
+    }
+  ],
+  "struct_id": "00002",
+  "num_orders": 1
+}

@@ -1,0 +1,14 @@
+{
+  "struct_id": "00002",
+  "seed": 1042,
+  "total_orders": 1,
+  "orders_build_coords": [
+    [
+      {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      }
+    ]
+  ]
+}

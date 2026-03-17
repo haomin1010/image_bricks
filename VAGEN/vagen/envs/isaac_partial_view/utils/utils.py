@@ -9,7 +9,7 @@ Extracts an action from an LLM response.  Supported action types:
 
 import json
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # Strict-only mode: no fallback JSON scanning.
@@ -35,6 +35,8 @@ def parse_response(response: str) -> Dict:
           or ``None``.
         - ``query_cameras`` (list[int] | None): Camera IDs to query, or
           ``None`` if this is not a query action.
+        - ``heatmap`` (dict | None): Optional heatmap annotation. Preferred
+          format is ``{"probs": [[...], ...]}`` (2D probability map).
         - ``is_submit`` (bool): Whether the action is a submit.
     """
     print("Parsing response:", response)
@@ -48,6 +50,7 @@ def parse_response(response: str) -> Dict:
 
     coordinate = _extract_coordinate(action_content) if has_required_tags else None
     query_cameras = _extract_query(action_content) if has_required_tags else None
+    heatmap = _extract_heatmap(annotation_content) if has_required_tags else None
     is_submit = _is_submit(action_content) if has_required_tags else False
     format_correct = (
         has_required_tags
@@ -58,6 +61,7 @@ def parse_response(response: str) -> Dict:
     print("Extracted annotation content:", annotation_content)
     print("Extracted coordinate:", coordinate)
     print("Extracted query cameras:", query_cameras)
+    print("Extracted heatmap:", heatmap)
     print("Is submit action:", is_submit)
     print("Format correct:", format_correct)
 
@@ -69,6 +73,7 @@ def parse_response(response: str) -> Dict:
         "format_correct": format_correct,
         "coordinate": coordinate,
         "query_cameras": query_cameras,
+        "heatmap": heatmap,
         "is_submit": is_submit,
     }
 
@@ -172,3 +177,75 @@ def _extract_query(text: str) -> Optional[List[int]]:
         return None
 
     return [cam_id]
+
+
+def _extract_heatmap(text: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Parse optional heatmap annotation JSON.
+
+    Supported formats inside ``<annotation>``:
+    1) ``{"heatmap": {"probs": [[...], [...], ...]}}`` (preferred)
+    2) ``{"probs": [[...], [...], ...]}``
+    """
+    if text is None:
+        return None
+    stripped = text.strip()
+    if stripped == "":
+        return None
+
+    try:
+        obj = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not isinstance(obj, dict):
+        return None
+
+    payload = obj.get("heatmap") if "heatmap" in obj else obj
+    if not isinstance(payload, dict):
+        return None
+
+    probs = _extract_probs(payload.get("probs"))
+    if probs is None:
+        return None
+    return {
+        "mode": "probs",
+        "probs": probs,
+    }
+
+
+def _extract_probs(raw: Any) -> Optional[List[List[float]]]:
+    """Validate a 2D non-negative numeric matrix and return float matrix."""
+    if not isinstance(raw, list) or len(raw) == 0:
+        return None
+    if not all(isinstance(row, list) for row in raw):
+        return None
+
+    rows = len(raw)
+    cols = len(raw[0]) if rows > 0 and isinstance(raw[0], list) else 0
+    if cols <= 0:
+        return None
+    # Keep parser robust and prevent huge accidental payloads.
+    if rows > 128 or cols > 128:
+        return None
+
+    probs: List[List[float]] = []
+    has_positive = False
+    for row in raw:
+        if len(row) != cols:
+            return None
+        out_row: List[float] = []
+        for val in row:
+            try:
+                fv = float(val)
+            except (TypeError, ValueError):
+                return None
+            if fv < 0.0:
+                return None
+            if fv > 0.0:
+                has_positive = True
+            out_row.append(fv)
+        probs.append(out_row)
+
+    if not has_positive:
+        return None
+    return probs

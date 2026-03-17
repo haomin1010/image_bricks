@@ -104,6 +104,10 @@ vagen_eval_init_defaults() {
   vagen__export_default VAGEN_OUTPUT_ROOT "${IMAGE_BRICKS_ROOT}/outputs"
   mkdir -p "${VAGEN_OUTPUT_ROOT}"
   vagen__export_default VAGEN_SGLANG_LOG "${VAGEN_OUTPUT_ROOT}/sglang_server.log"
+  # ---- Partial-view heatmap output (text + heatmap pipeline) ----
+  # 1: enable heatmap artifact dumping from model <annotation>; 0: disable.
+  vagen__export_default VAGEN_ISAAC_HEATMAP_OUTPUT_ENABLE "0"
+  vagen__export_default VAGEN_ISAAC_HEATMAP_OUTPUT_DIR "${VAGEN_OUTPUT_ROOT}/eval_isaac/heatmap_outputs"
   vagen__export_default VAGEN_FILEROOT "${IMAGE_BRICKS_ROOT}"
   vagen__export_default VAGEN_EVAL_CONFIG_DEFAULT "${IMAGE_BRICKS_ROOT}/VAGEN/examples/evaluate/isaac/config.yaml"
 

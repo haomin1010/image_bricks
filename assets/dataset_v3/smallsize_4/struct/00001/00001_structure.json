@@ -1,0 +1,38 @@
+{
+  "rules": "small_size4_connected_stable",
+  "dimensions": {
+    "length": 4,
+    "width": 4,
+    "height": 4
+  },
+  "seed": 42,
+  "total_blocks": 4,
+  "blocks_canonical": [
+    {
+      "id": 0,
+      "x": 0,
+      "y": 2,
+      "z": 0
+    },
+    {
+      "id": 1,
+      "x": 0,
+      "y": 3,
+      "z": 0
+    },
+    {
+      "id": 2,
+      "x": 0,
+      "y": 2,
+      "z": 1
+    },
+    {
+      "id": 3,
+      "x": 0,
+      "y": 3,
+      "z": 1
+    }
+  ],
+  "struct_id": "00001",
+  "num_orders": 6
+}

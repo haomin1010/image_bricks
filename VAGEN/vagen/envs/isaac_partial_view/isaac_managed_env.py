@@ -4,20 +4,23 @@ Isaac managed environment for BrickIsaac partial-view mode.
 Partial-view policy:
 - Reset shows full target multi-view images (5 cameras).
 - The model may query exactly one camera per turn with
-  <thinking>...</thinking><action>{"query": [id]}</action>.
+  <thinking>...</thinking><annotation>...</annotation><action>{"query": [id]}</action>.
 - Reward/termination/task evaluation follows the same logic as full-view mode.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
+from datetime import datetime
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import ray
 from PIL import Image
 
@@ -44,6 +47,12 @@ DEFAULT_DATASET_ROOT = str(
     / "dataset"
     / "output_snapshots"
     / "test"
+)
+DEFAULT_HEATMAP_OUTPUT_ROOT = str(
+    Path(__file__).resolve().parents[4]
+    / "outputs"
+    / "eval_isaac"
+    / "heatmap_outputs"
 )
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
@@ -131,6 +140,12 @@ class IsaacManagedEnv(GymImageEnv):
         self._current_dataset_entry: Optional[Dict[str, Any]] = None
         # Track queried camera IDs since the last placement step.
         self._queried_cameras_since_last_placement: set[int] = set()
+        self._last_query_camera_id: Optional[int] = None
+        self._heatmap_output_enabled = _coerce_bool(os.getenv("VAGEN_ISAAC_HEATMAP_OUTPUT_ENABLE", "0"))
+        self._heatmap_output_root = Path(
+            os.getenv("VAGEN_ISAAC_HEATMAP_OUTPUT_DIR", DEFAULT_HEATMAP_OUTPUT_ROOT)
+        ).expanduser()
+        self._heatmap_session_dir: Optional[Path] = None
 
         reward_config = IsaacRewardConfig(
             format_reward=self.config.format_reward,
@@ -194,6 +209,16 @@ class IsaacManagedEnv(GymImageEnv):
         self.steps_taken = 0
         self.trajectory = []
         self._queried_cameras_since_last_placement.clear()
+        self._last_query_camera_id = None
+        self._heatmap_session_dir = None
+        if self._heatmap_output_enabled:
+            self._heatmap_session_dir = self._build_heatmap_session_dir(seed=seed)
+            try:
+                self._heatmap_session_dir.mkdir(parents=True, exist_ok=True)
+                env_info["heatmap_output_dir"] = str(self._heatmap_session_dir)
+            except Exception as exc:
+                logger.warning("Failed to create heatmap output dir %s: %s", self._heatmap_session_dir, exc)
+                self._heatmap_session_dir = None
 
         all_images = self._load_dataset_images()
         self._dataset_images_cache = list(all_images)
@@ -253,8 +278,10 @@ class IsaacManagedEnv(GymImageEnv):
 
         coordinate = parsed.get("coordinate")
         query_cameras = parsed.get("query_cameras")
+        heatmap = parsed.get("heatmap")
         is_submit = bool(parsed.get("is_submit", False))
         action_valid = bool(parsed.get("format_correct", False))
+        heatmap_camera_id: Optional[int] = self._last_query_camera_id
 
         placement_result: Optional[PlacementRewardResult] = None
         isaac_info: Dict[str, Any] = {}
@@ -273,6 +300,7 @@ class IsaacManagedEnv(GymImageEnv):
         }
 
         if coordinate is not None:
+            action_kind = "place"
             goal = {"x": coordinate["x"], "y": coordinate["y"], "z": coordinate["z"]}
             server = await self._get_server()
             try:
@@ -301,6 +329,7 @@ class IsaacManagedEnv(GymImageEnv):
             metrics["traj_metrics"]["termination_reason"] = isaac_info.get("termination_reason")
             # New placement opens a new query window.
             self._queried_cameras_since_last_placement.clear()
+            self._last_query_camera_id = None
             info.update(
                 {
                     "timeout": bool(isaac_info.get("timeout", False)),
@@ -310,6 +339,7 @@ class IsaacManagedEnv(GymImageEnv):
             )
 
         elif is_submit:
+            action_kind = "submit"
             goal = {"type": "submit"}
             server = await self._get_server()
             try:
@@ -341,6 +371,7 @@ class IsaacManagedEnv(GymImageEnv):
             info.update({"timeout": bool(isaac_info.get("timeout", False))})
 
         elif query_cameras is not None:
+            action_kind = "query"
             scene_images = await self._render_env_images()
             max_cam = min(len(scene_images), int(self.config.n_cameras), MAX_PARTIAL_VIEW_CAMERAS)
             selected_ids = [cam_id for cam_id in query_cameras if 0 <= cam_id < max_cam]
@@ -351,7 +382,7 @@ class IsaacManagedEnv(GymImageEnv):
                 msg = (
                     f"Invalid camera query: {query_cameras}. "
                     "Use exactly one action in this format:\n"
-                    f"<thinking></thinking><action>{{\"query\": [INT]}}</action> with INT in 0..{max(0, max_cam - 1)}."
+                    f"<thinking></thinking><annotation></annotation><action>{{\"query\": [INT]}}</action> with INT in 0..{max(0, max_cam - 1)}."
                 )
                 obs = {"obs_str": action_template(action_result=msg, img_placeholder="")}
             else:
@@ -375,18 +406,31 @@ class IsaacManagedEnv(GymImageEnv):
                         action_str=action_str,
                     )
                     self._queried_cameras_since_last_placement.add(int(selected_id))
+                    self._last_query_camera_id = int(selected_id)
+                    heatmap_camera_id = int(selected_id)
                     metrics["turn_metrics"]["action_is_effective"] = True
 
         else:
+            action_kind = "invalid"
             action_valid = False
             metrics["turn_metrics"]["action_is_valid"] = False
             msg = (
                 "Could not parse your action. Valid formats:\n"
-                f'  Query one camera: <thinking></thinking><action>{{"query": [2]}}</action> (ID 0..{max(0, self.config.n_cameras - 1)})\n'
-                '  Place a brick: <thinking></thinking><action>{"x": 2, "y": 3, "z": 0}</action>\n'
-                "  Submit: <thinking></thinking><action>submit</action>"
+                f'  Query one camera: <thinking></thinking><annotation></annotation><action>{{"query": [2]}}</action> (ID 0..{max(0, self.config.n_cameras - 1)})\n'
+                '  Place a brick: <thinking></thinking><annotation></annotation><action>{"x": 2, "y": 3, "z": 0}</action>\n'
+                "  Submit: <thinking></thinking><annotation></annotation><action>submit</action>"
             )
             obs = {"obs_str": action_template(action_result=msg, img_placeholder="")}
+
+        heatmap_path = await self._dump_heatmap_output(
+            heatmap=heatmap,
+            action_kind=action_kind,
+            coordinate=coordinate,
+            query_camera_id=heatmap_camera_id,
+        )
+        if heatmap is not None:
+            info["heatmap"] = heatmap
+            info["heatmap_output_path"] = heatmap_path
 
         reward += self.reward_manager.format_reward(action_valid)
 
@@ -424,6 +468,7 @@ class IsaacManagedEnv(GymImageEnv):
                 "step_idx": self.steps_taken,
                 "coordinate": coordinate,
                 "query_cameras": query_cameras,
+                "heatmap": heatmap,
                 "is_submit": is_submit,
                 "reward": reward,
                 "success": info["success"],
@@ -496,6 +541,117 @@ class IsaacManagedEnv(GymImageEnv):
             fallback = self._make_fallback_images(count=n_images, color=(50, 50, 50))
             self._latest_scene_images = list(fallback)
             return fallback
+
+    def _build_heatmap_session_dir(self, seed: int) -> Path:
+        dataset_stem = "unknown"
+        if self._current_dataset_entry is not None:
+            dataset_stem = str(self._current_dataset_entry.get("stem", "unknown"))
+        env_slot = -1 if self._sub_env_id is None else int(self._sub_env_id)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        session_name = f"{stamp}_seed{int(seed):06d}_env{env_slot:02d}_{dataset_stem}"
+        return self._heatmap_output_root / session_name
+
+    async def _dump_heatmap_output(
+        self,
+        *,
+        heatmap: Optional[Dict[str, Any]],
+        action_kind: str,
+        coordinate: Optional[Dict[str, int]],
+        query_camera_id: Optional[int],
+    ) -> Optional[str]:
+        if not self._heatmap_output_enabled or heatmap is None:
+            return None
+        if self._heatmap_session_dir is None:
+            return None
+
+        h, w = self.config.image_size[1], self.config.image_size[0]
+        probs = heatmap.get("probs")
+        if not isinstance(probs, list):
+            return None
+
+        try:
+            coarse = np.asarray(probs, dtype=np.float32)
+        except Exception:
+            return None
+        if coarse.ndim != 2 or coarse.shape[0] <= 0 or coarse.shape[1] <= 0:
+            return None
+
+        coarse = np.clip(coarse, 0.0, None)
+        coarse_max = float(np.max(coarse))
+        if coarse_max <= 0.0:
+            return None
+
+        coarse = coarse / coarse_max
+        coarse_u8 = (np.clip(coarse, 0.0, 1.0) * 255.0).astype(np.uint8)
+        coarse_img = Image.fromarray(coarse_u8, mode="L")
+        heat_img = coarse_img.resize((w, h), Image.Resampling.BILINEAR)
+        heat = np.asarray(heat_img, dtype=np.float32) / 255.0
+        heat_meta: Dict[str, Any] = {
+            "mode": "probs",
+            "source_shape": [int(coarse.shape[0]), int(coarse.shape[1])],
+        }
+
+        step_dir = self._heatmap_session_dir / f"step_{int(self.steps_taken):03d}"
+        try:
+            await asyncio.to_thread(step_dir.mkdir, parents=True, exist_ok=True)
+
+            gray = (np.clip(heat, 0.0, 1.0) * 255.0).astype(np.uint8)
+            heatmap_img_path = step_dir / "heatmap_gray.png"
+            await asyncio.to_thread(Image.fromarray(gray, mode="L").save, heatmap_img_path, "PNG")
+
+            overlay_camera_id: Optional[int] = None
+            if isinstance(query_camera_id, int):
+                overlay_camera_id = int(query_camera_id)
+
+            overlay_image = None
+            if self._latest_scene_images:
+                if overlay_camera_id is not None and 0 <= overlay_camera_id < len(self._latest_scene_images):
+                    overlay_image = self._latest_scene_images[overlay_camera_id]
+                else:
+                    overlay_image = self._latest_scene_images[0]
+            if overlay_image is None:
+                rendered = await self._render_env_images()
+                if rendered:
+                    if overlay_camera_id is not None and 0 <= overlay_camera_id < len(rendered):
+                        overlay_image = rendered[overlay_camera_id]
+                    else:
+                        overlay_image = rendered[0]
+            if overlay_image is not None:
+                if overlay_image.size != self.config.image_size:
+                    overlay_image = overlay_image.resize(self.config.image_size, Image.Resampling.LANCZOS)
+                base = np.asarray(overlay_image.convert("RGB"), dtype=np.float32)
+                alpha = np.clip(heat, 0.0, 1.0)[..., None] * 0.65
+                red = np.zeros_like(base)
+                red[..., 0] = 255.0
+                overlay = (base * (1.0 - alpha) + red * alpha).clip(0.0, 255.0).astype(np.uint8)
+                cam_label = "top"
+                if overlay_camera_id is not None and 0 <= overlay_camera_id < len(STACK_CAMERA_LABELS):
+                    cam_label = STACK_CAMERA_LABELS[overlay_camera_id]
+                overlay_path = step_dir / f"heatmap_overlay_{cam_label}.png"
+                await asyncio.to_thread(Image.fromarray(overlay, mode="RGB").save, overlay_path, "PNG")
+
+            meta = {
+                "step_idx": int(self.steps_taken),
+                "action_kind": action_kind,
+                "coordinate": coordinate,
+                "query_camera_id": overlay_camera_id,
+                "query_camera_label": (
+                    STACK_CAMERA_LABELS[overlay_camera_id]
+                    if isinstance(overlay_camera_id, int) and 0 <= overlay_camera_id < len(STACK_CAMERA_LABELS)
+                    else None
+                ),
+            }
+            meta.update(heat_meta)
+            meta_path = step_dir / "heatmap_meta.json"
+            await asyncio.to_thread(
+                meta_path.write_text,
+                json.dumps(meta, ensure_ascii=False, indent=2),
+                "utf-8",
+            )
+            return str(step_dir)
+        except Exception as exc:
+            logger.warning("Failed to dump heatmap output at step %d: %s", self.steps_taken, exc)
+            return None
 
     def _build_placement_feedback(
         self,
