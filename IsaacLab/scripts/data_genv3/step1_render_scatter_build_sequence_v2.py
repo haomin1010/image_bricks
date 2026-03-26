@@ -111,17 +111,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Step1: generate structures + all build orders into struct/.")
     parser.add_argument("--output_root", type=str, default="")
     parser.add_argument("--output_count", type=int, default=100)
+    parser.add_argument("--start_id", type=int, default=1, help="Starting struct id number, e.g. 1001.")
+    parser.add_argument("--base_seed", type=int, default=42, help="Base seed for structure generation.")
     args = parser.parse_args()
     if int(args.output_count) <= 0:
         raise ValueError("output_count must be > 0")
+    if int(args.start_id) <= 0:
+        raise ValueError("start_id must be > 0")
 
     output_root = os.path.abspath(os.path.expanduser(args.output_root)) if args.output_root else _default_output_root()
     struct_root = os.path.join(output_root, "struct")
     os.makedirs(struct_root, exist_ok=True)
 
     for i in range(int(args.output_count)):
-        struct_id = f"{i + 1:05d}"
-        seed = 42 + i * 1000
+        struct_id = f"{int(args.start_id) + i:05d}"
+        seed = int(args.base_seed) + i * 1000
         blocks, struct_payload = _generate_structure(seed)
         orders = _all_build_orders(blocks)
         struct_payload["struct_id"] = struct_id

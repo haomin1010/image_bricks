@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import colorsys
 import json
 import os
 import random
@@ -15,6 +14,14 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Step2: sample from struct/orders and render images + step json only.")
 parser.add_argument("--output_root", type=str, default="", help="Default: assets/dataset_v3/smallsize4")
 parser.add_argument("--output_count", type=int, default=100, help="How many rendered samples to generate.")
+parser.add_argument("--seed", type=int, default=42, help="Random seed controlling structure, order, scatter and color sampling.")
+parser.add_argument(
+    "--sample_mode",
+    type=str,
+    default="random",
+    choices=["random", "unique_struct"],
+    help="random: sample structures with replacement. unique_struct: each rendered sample uses a different structure.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if int(args_cli.output_count) <= 0:
@@ -43,6 +50,17 @@ def _root() -> str:
     )
 
 
+def _load_color_pool(output_root: str) -> list[dict]:
+    pool_path = os.path.join(output_root, "block_pool", "color_pool.json")
+    if not os.path.isfile(pool_path):
+        raise FileNotFoundError(f"color_pool.json not found: {pool_path}. Please run step0_generate_block_pool_v4.py first.")
+    payload = json.load(open(pool_path, "r", encoding="utf-8"))
+    assets = payload.get("assets", [])
+    if not assets:
+        raise RuntimeError(f"No assets found in color pool: {pool_path}")
+    return assets
+
+
 def _grid_to_world(gx: int, gy: int, gz: int) -> tuple[float, float, float]:
     return -0.204 + gx * 0.051 + 0.0255, -0.204 + gy * 0.051 + 0.0255, 0.025 + gz * 0.05
 
@@ -50,22 +68,6 @@ def _grid_to_world(gx: int, gy: int, gz: int) -> tuple[float, float, float]:
 def _yaw_quat(yaw: float) -> tuple[float, float, float, float]:
     h = 0.5 * yaw
     return float(np.cos(h)), 0.0, 0.0, float(np.sin(h))
-
-
-def _colors(n: int, seed: int) -> list[tuple[float, float, float]]:
-    rng = random.Random(seed + 137)
-    hues = [((i / float(max(1, n))) + rng.uniform(-0.06, 0.06)) % 1.0 for i in range(n)]
-    rng.shuffle(hues)
-    out = []
-    for h in hues:
-        s, v = rng.uniform(0.72, 0.96), rng.uniform(0.36, 0.66)
-        r, g, b = colorsys.hsv_to_rgb(h, s, v)
-        mx = max(r, g, b)
-        if mx > 0.72:
-            k = 0.72 / mx
-            r, g, b = r * k, g * k, b * k
-        out.append((float(r), float(g), float(b)))
-    return out
 
 
 def _scatter(target_coords: list[tuple[int, int, int]], seed: int) -> list[dict]:
@@ -92,16 +94,6 @@ def _scatter(target_coords: list[tuple[int, int, int]], seed: int) -> list[dict]
     if len(out) < len(target_coords):
         raise RuntimeError("scatter failed")
     return out
-
-
-def _usd() -> str:
-    p3 = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../assets/dataset_v3/bordered_blue_block.usda"))
-    p2 = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../assets/dataset_v2/bordered_blue_block.usda"))
-    if os.path.isfile(p3):
-        return p3
-    if os.path.isfile(p2):
-        return p2
-    raise FileNotFoundError("bordered_blue_block.usda not found")
 
 
 def _cam_cfg(path: str, pos: tuple[float, float, float], rot: tuple[float, float, float, float]) -> CameraCfg:
@@ -145,9 +137,7 @@ def _look_at_quat(
     return float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])
 
 
-def _scene_cfg(n: int, cols: list[tuple[float, float, float]]):
-    usd = _usd()
-
+def _scene_cfg(block_assets: list[dict], output_root: str):
     @configclass
     class Cfg(InteractiveSceneCfg):
         ground = AssetBaseCfg(
@@ -185,17 +175,15 @@ def _scene_cfg(n: int, cols: list[tuple[float, float, float]]):
             _look_at_quat((-0.08, 0.62, 0.52), (-0.102, -0.102, 0.03)),
         )
 
-    for i in range(n):
+    for i, asset in enumerate(block_assets):
         setattr(
             Cfg,
             f"block_{i}",
             RigidObjectCfg(
                 prim_path=f"{{ENV_REGEX_NS}}/Block_{i}",
                 spawn=sim_utils.UsdFileCfg(
-                    usd_path=usd,
+                    usd_path=os.path.join(output_root, asset["asset_relpath"]),
                     scale=(1.0, 1.0, 1.0),
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=cols[i], metallic=0.0, roughness=0.62),
-                    visual_material_path="random_material",
                 ),
                 init_state=RigidObjectCfg.InitialStateCfg(pos=(-5.0, -5.0, -5.0), rot=(1.0, 0.0, 0.0, 0.0)),
             ),
@@ -210,7 +198,7 @@ def _entries(scene: InteractiveScene) -> dict:
     }
 
 
-def _set_layout(scene: InteractiveScene, target: list[tuple[int, int, int]], scatter: list[dict], step_idx: int):
+def _set_layout(scene: InteractiveScene, target: list[tuple[int, int, int]], scatter: list[dict], step_idx: int, block_perm: list[int]):
     env_ids = torch.tensor([0], device=scene.device, dtype=torch.int32)
     zero = torch.zeros((1, 6), device=scene.device, dtype=torch.float32)
     for i in range(len(target)):
@@ -221,15 +209,17 @@ def _set_layout(scene: InteractiveScene, target: list[tuple[int, int, int]], sca
             wx, wy, wz = scatter[i]["world"]
             quat = scatter[i]["quat"]
         pose = torch.tensor([[wx, wy, wz, quat[0], quat[1], quat[2], quat[3]]], device=scene.device, dtype=torch.float32)
-        b = scene[f"block_{i}"]
+        b = scene[f"block_{block_perm[i]}"]
         b.write_root_pose_to_sim(pose, env_ids=env_ids)
         b.write_root_velocity_to_sim(zero, env_ids=env_ids)
 
 
-def _hide_blocks(scene: InteractiveScene, start_idx: int, total_blocks: int):
+def _hide_blocks(scene: InteractiveScene, start_idx: int, total_blocks: int, block_perm: list[int], active_blocks: int):
     env_ids = torch.tensor([0], device=scene.device, dtype=torch.int32)
     zero = torch.zeros((1, 6), device=scene.device, dtype=torch.float32)
-    for i in range(int(start_idx), int(total_blocks)):
+    hidden_indices = set(block_perm[int(start_idx):active_blocks])
+    hidden_indices.update(i for i in range(total_blocks) if i not in set(block_perm[:active_blocks]))
+    for i in sorted(hidden_indices):
         pose = torch.tensor([[-5.0, -5.0, -5.0, 1.0, 0.0, 0.0, 0.0]], device=scene.device, dtype=torch.float32)
         b = scene[f"block_{i}"]
         b.write_root_pose_to_sim(pose, env_ids=env_ids)
@@ -426,10 +416,9 @@ def _warmup(sim, scene, dt: float, steps: int):
         scene.update(dt=dt)
 
 
-def _build_runtime(device: str) -> dict:
-    total_blocks = 10
-    all_cols = _colors(total_blocks, seed=42)
-    cfg = _scene_cfg(total_blocks, all_cols)
+def _build_runtime(device: str, output_root: str, block_assets: list[dict]) -> dict:
+    total_blocks = len(block_assets)
+    cfg = _scene_cfg(block_assets, output_root)
     sim_cfg = SimulationCfg(
         device=device,
         dt=0.01,
@@ -441,7 +430,31 @@ def _build_runtime(device: str) -> dict:
     sim.reset()
     _set_ortho_cameras(sim)
     _warmup(sim, scene, sim_cfg.dt, 30)
-    return {"sim": sim, "scene": scene, "sim_cfg": sim_cfg, "entries": _entries(scene), "all_cols": all_cols, "total_blocks": total_blocks}
+    return {
+        "sim": sim,
+        "scene": scene,
+        "sim_cfg": sim_cfg,
+        "entries": _entries(scene),
+        "block_assets": block_assets,
+        "total_blocks": total_blocks,
+    }
+
+
+def _close_runtime(runtime: dict):
+    sim = runtime["sim"]
+    try:
+        if not sim.has_gui():
+            sim.stop()
+    except Exception:
+        pass
+    try:
+        sim.clear_all_callbacks()
+    except Exception:
+        pass
+    try:
+        sim.clear_instance()
+    except Exception:
+        pass
 
 
 def _reset_episode(runtime: dict):
@@ -456,25 +469,42 @@ def _render_one(sample_id: str, target: list[tuple[int, int, int]], struct_meta:
     out_dir = os.path.join(output_root, "sft_train", sample_id)
     views_dir = os.path.join(out_dir, "views")
     bbox_dir = os.path.join(out_dir, "bbox_overlay")
+    target_dir = os.path.join(out_dir, "target_views")
     os.makedirs(out_dir, exist_ok=True)
     _cleanup_legacy_step_json(out_dir, sample_id)
     os.makedirs(views_dir, exist_ok=True)
     os.makedirs(bbox_dir, exist_ok=True)
-    struct_dir = os.path.join(output_root, "struct", str(struct_meta["struct_id"]))
-    os.makedirs(struct_dir, exist_ok=True)
+    os.makedirs(target_dir, exist_ok=True)
 
     sim = runtime["sim"]
     scene = runtime["scene"]
     sim_cfg = runtime["sim_cfg"]
     entries = runtime["entries"]
     total_blocks = int(runtime["total_blocks"])
-    cols = runtime["all_cols"][: len(target)]
+    block_perm = random.SystemRandom().sample(list(range(total_blocks)), len(target))
+    selected_assets = [runtime["block_assets"][block_idx] for block_idx in block_perm]
+    cols = [tuple(asset["color_rgb"]) for asset in selected_assets]
+    scheme_payload = {
+        "sample_id": sample_id,
+        "struct_id": struct_meta["struct_id"],
+        "order_index": int(order_index),
+        "palette_seed": int(seed),
+        "selected_asset_ids": [asset["asset_id"] for asset in selected_assets],
+        "selected_asset_relpaths": [asset["asset_relpath"] for asset in selected_assets],
+        "selected_colors_rgb": [asset["color_rgb"] for asset in selected_assets],
+        "block_perm": block_perm,
+    }
+    scheme_path = os.path.join(out_dir, f"{sample_id}_color_scheme.json")
+    with open(scheme_path, "w", encoding="utf-8") as f:
+        json.dump(scheme_payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    print(f"[SAVE]: {scheme_path}")
     scatter = _scatter(target, seed=seed + 701)
     steps = []
     _reset_episode(runtime)
     for step_idx in range(len(target) + 1):
-        _set_layout(scene, target, scatter, step_idx)
-        _hide_blocks(scene, len(target), total_blocks)
+        _set_layout(scene, target, scatter, step_idx, block_perm)
+        _hide_blocks(scene, len(target), total_blocks, block_perm, len(target))
         _warmup(sim, scene, sim_cfg.dt, 12)
 
         images, views, rgb_by_view = [], [], {}
@@ -492,8 +522,8 @@ def _render_one(sample_id: str, target: list[tuple[int, int, int]], struct_meta:
             rgb_by_view[vn] = rgb_u8
             print(f"[SAVE]: {p}")
             if step_idx == len(target):
-                target_name = f"{struct_meta['struct_id']}_{vn}.png"
-                target_path = os.path.join(struct_dir, target_name)
+                target_name = f"{sample_id}_{vn}_target.png"
+                target_path = os.path.join(target_dir, target_name)
                 Image.fromarray(rgb_u8).save(target_path)
                 print(f"[SAVE]: {target_path}")
 
@@ -533,8 +563,10 @@ def _render_one(sample_id: str, target: list[tuple[int, int, int]], struct_meta:
         steps.append(_collect_step_record(step_idx, target, scatter, images, views, bbox))
         print(f"[INFO]: step={step_idx:05d} placed={step_idx}/{len(target)} scattered={len(target)-step_idx}")
 
-    struct_id = str(struct_meta["struct_id"])
-    structure_target_images = {vn: os.path.join("struct", struct_id, f"{struct_id}_{vn}.png").replace("\\", "/") for vn in entries.keys()}
+    structure_target_images = {
+        vn: os.path.join("sft_train", sample_id, "target_views", f"{sample_id}_{vn}_target.png").replace("\\", "/")
+        for vn in entries.keys()
+    }
     _write_sample_json(out_dir, sample_id, target, cols, struct_meta, order_index, steps, structure_target_images)
 
 
@@ -548,8 +580,9 @@ def _render_struct_target_images(struct_id: str, target: list[tuple[int, int, in
     total_blocks = int(runtime["total_blocks"])
     _reset_episode(runtime)
 
-    _set_layout(scene, target, [{"world": _grid_to_world(*p), "quat": (1.0, 0.0, 0.0, 0.0)} for p in target], len(target))
-    _hide_blocks(scene, len(target), total_blocks)
+    block_perm = list(range(len(target)))
+    _set_layout(scene, target, [{"world": _grid_to_world(*p), "quat": (1.0, 0.0, 0.0, 0.0)} for p in target], len(target), block_perm)
+    _hide_blocks(scene, len(target), total_blocks, block_perm, len(target))
     _warmup(sim, scene, sim_cfg.dt, 12)
 
     for vn, e in entries.items():
@@ -577,38 +610,31 @@ def main():
     print(f"[INFO]: output_root={output_root}")
     print(f"[INFO]: struct_count={len(structs)}")
     print(f"[INFO]: render_count={int(args_cli.output_count)}")
-    runtime = _build_runtime(args_cli.device)
+    block_assets = _load_color_pool(output_root)
+    print(f"[INFO]: block_pool_size={len(block_assets)}")
+    rng = random.Random(int(args_cli.seed))
+    render_count = int(args_cli.output_count)
+    if args_cli.sample_mode == "unique_struct" and render_count > len(structs):
+        raise ValueError(
+            f"sample_mode=unique_struct requires output_count <= struct_count, got {render_count} > {len(structs)}"
+        )
 
+    selected_structs = rng.sample(structs, render_count) if args_cli.sample_mode == "unique_struct" else None
+
+    runtime = _build_runtime(args_cli.device, output_root, block_assets)
     try:
-        # Render target images for every structure first.
-        for i, (struct_id, s_json, _) in enumerate(structs):
-            canonical_target, _ = _load_struct_canonical(s_json)
-            print(f"[INFO]: render_target struct={struct_id} ({i+1}/{len(structs)}) blocks={len(canonical_target)}")
-            _render_struct_target_images(struct_id, canonical_target, output_root, runtime)
-
-        rng = random.Random(42)
-        for i in range(int(args_cli.output_count)):
+        for i in range(render_count):
             sample_id = f"{i + 1:05d}"
-            struct_id, s_json, o_json = rng.choice(structs)
+            if selected_structs is not None:
+                struct_id, s_json, o_json = selected_structs[i]
+            else:
+                struct_id, s_json, o_json = rng.choice(structs)
             target, struct_meta, order_index = _load_struct_and_order(s_json, o_json, rng)
-            seed = 42 + i * 97
-            print(f"[INFO]: sample={sample_id} struct={struct_id} order_index={order_index} blocks={len(target)}")
+            seed = int(args_cli.seed) + i * 97
+            print(f"[INFO]: sample={sample_id} struct={struct_id} order_index={order_index} blocks={len(target)} scheme_seed={seed}")
             _render_one(sample_id, target, struct_meta, order_index, output_root, seed, runtime)
     finally:
-        sim = runtime["sim"]
-        try:
-            if not sim.has_gui():
-                sim.stop()
-        except Exception:
-            pass
-        try:
-            sim.clear_all_callbacks()
-        except Exception:
-            pass
-        try:
-            sim.clear_instance()
-        except Exception:
-            pass
+        _close_runtime(runtime)
         try:
             simulation_app.close()
         except Exception:
